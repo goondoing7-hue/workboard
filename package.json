@@ -1,0 +1,20 @@
+{
+  "name": "workboard",
+  "version": "5.0.0",
+  "private": true,
+  "description": "청소년상담복지센터 업무·사업 관리 보드",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "dev": "node scripts/build.js && npx serve dist"
+  },
+  "dependencies": {
+    "lucide-react": "^0.383.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.12",
+    "jsdom": "^30.0.1",
+    "tailwindcss": "^3.4.17"
+  }
+}

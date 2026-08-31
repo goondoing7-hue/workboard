@@ -1,0 +1,31 @@
+{
+  "name": "업무보드",
+  "short_name": "업무보드",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#EDEFEC",
+  "theme_color": "#EDEFEC",
+  "lang": "ko",
+  "description": "사업별 할 일과 필수 행정서류를 관리하는 개인 업무 보드",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
