@@ -5,7 +5,7 @@ import {
   Pencil, Wallet, WalletMinimal, ListChecks, Download, Upload,
   CornerDownLeft, GripVertical, ArrowUpDown, RotateCcw, LayoutGrid,
   Stamp, Sunrise, CircleDot, Palette, Cloud, CloudOff, RefreshCw, Copy, ShieldCheck, HardDriveDownload,
-  LogIn, HardDrive, Database, StickyNote, Pin, FileX,
+  LogIn, HardDrive, Database, StickyNote, Pin, FileX, CornerDownRight,
   Star, Bold, Italic, Underline, Baseline, ImagePlus, MoreVertical, CheckSquare
 } from "lucide-react";
 
@@ -19,8 +19,67 @@ const C = {
   green: "#3F7A52", greenSoft: "#E9F1EC",
 };
 /* 사업 구분용 팔레트 — 종이 위에서 서로 확실히 구분되는 8색 */
-const PALETTE = ["#24486B", "#2F6F62", "#C2402F", "#B0731F", "#6B4A7A", "#5C7238", "#4A5B66", "#A64B62"];
-const colorOf = (p, i = 0) => p?.color || PALETTE[i % PALETTE.length];
+/* 색조를 45도씩 정확히 벌린 8색 — 사업끼리도, 세부사업끼리도 섞이지 않습니다 */
+const PALETTE = ["#25257E", "#226D5A", "#B13E2F", "#93831A", "#286728", "#7A3D8F", "#9C3A6B", "#476E2B"];
+/* 예전 팔레트로 저장된 색은 가장 가까운 새 색으로 옮깁니다 */
+const OLD_COLORS = {
+  "#24486B": "#25257E", "#284D71": "#25257E", "#263073": "#25257E",
+  "#2F6F62": "#226D5A", "#296770": "#226D5A",
+  "#C2402F": "#B13E2F", "#B24234": "#B13E2F",
+  "#B0731F": "#93831A", "#9D6B25": "#93831A", "#9A8A1D": "#93831A",
+  "#6B4A7A": "#7A3D8F", "#704983": "#7A3D8F", "#6D4785": "#7A3D8F",
+  "#5C7238": "#476E2B", "#5B7236": "#476E2B",
+  "#366336": "#286728", "#316845": "#286728", "#4A5B66": "#286728",
+  "#A64B62": "#9C3A6B", "#9B4670": "#9C3A6B", "#964077": "#9C3A6B",
+};
+const fixColor = (c) => OLD_COLORS[String(c || "").toUpperCase()] || c;
+/* 세부사업 하이라이트 — 그 사업의 색에서 갈라져 나온 옅은 계열색.
+   색조(hue)는 상위 사업을 따르고 밝기만 달리해, 다른 사업과 섞이지 않습니다. */
+const hexToHsl = (hex) => {
+  const h = String(hex || "#24486B").replace("#", "");
+  const r = parseInt(h.slice(0, 2), 16) / 255, g = parseInt(h.slice(2, 4), 16) / 255, b = parseInt(h.slice(4, 6), 16) / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let hh = 0;
+  if (d) {
+    if (mx === r) hh = ((g - b) / d) % 6;
+    else if (mx === g) hh = (b - r) / d + 2;
+    else hh = (r - g) / d + 4;
+  }
+  hh = (hh * 60 + 360) % 360;
+  const l = (mx + mn) / 2;
+  const ss = d ? d / (1 - Math.abs(2 * l - 1)) : 0;
+  return [hh, ss, l];
+};
+const hslToHex = (h, s2, l) => {
+  const c = (1 - Math.abs(2 * l - 1)) * s2, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = l - c / 2;
+  const t = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x]
+    : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  return "#" + t.map((v) => Math.round((v + m) * 255).toString(16).padStart(2, "0")).join("");
+};
+/* 같은 색조 안에서 밝기·채도를 조금씩 달리한 6단계 */
+const TINTS = [
+  [-14, 0.60, 0.93], [0, 0.52, 0.84], [14, 0.46, 0.74],
+  [-14, 0.34, 0.88], [14, 0.66, 0.68], [0, 0.30, 0.96],
+];
+const subColor = (sub, i = 0, base) => {
+  const [h] = hexToHsl(base || "#284D71");
+  const [dh, ss, ll] = TINTS[i % TINTS.length];
+  return hslToHex((h + dh + 360) % 360, ss, ll);
+};
+/* 옅은 칸도 경계가 보이도록 같은 색조의 진한 선 */
+const subEdge = (i = 0, base) => {
+  const [h] = hexToHsl(base || "#284D71");
+  const [dh, ss, ll] = TINTS[i % TINTS.length];
+  return hslToHex((h + dh + 360) % 360, Math.min(0.78, ss + 0.14), Math.max(0.30, ll - 0.36));
+};
+const isInbox = (s) => !!s.inbox;
+const liveSubs = (p) => p.subs.filter((s) => !isInbox(s));
+/* 남은 할 일도 미비 서류도 없으면 끝난 세부사업으로 봅니다 */
+const subDoneAll = (s) => {
+  const st = subStats(s);
+  return st.todoTotal > 0 || st.docTotal > 0 ? st.done === st.total : false;
+};
+const colorOf = (p, i = 0) => fixColor(p?.color) || PALETTE[i % PALETTE.length];
 
 const FONT =
   '-apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", "Malgun Gothic", sans-serif';
@@ -201,7 +260,7 @@ const VIEW_KEY = "workboard:view";
 const lastView = () => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch (e) { return {}; } };
 const saveView = (v) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch (e) {} };
 
-const APP_VERSION = "2026.08.28";
+const APP_VERSION = "2026.08.31f";
 const STORAGE_KEY = "workboard:data";
 
 /* 저장소 — 브라우저(localStorage)를 쓰고, Claude 아티팩트 안에서는 그쪽 저장소를 씁니다 */
@@ -383,7 +442,7 @@ function ColorPicker({ color, onPick }) {
 /* ------------------------------------------------------------------
    드래그 정렬
 ------------------------------------------------------------------- */
-function Sortable({ items, idOf, onReorder, renderRow }) {
+function Sortable({ items, idOf, onReorder, renderRow, className, style }) {
   const [dragId, setDragId] = useState(null);
   const listRef = useRef(null);
   const itemsRef = useRef(items);
@@ -418,7 +477,7 @@ function Sortable({ items, idOf, onReorder, renderRow }) {
   };
 
   return (
-    <div ref={listRef}>
+    <div ref={listRef} className={className} style={style}>
       {items.map((it) => {
         const id = idOf(it), on = dragId === id;
         return (
@@ -931,7 +990,7 @@ function HomeView({ data, rows, onDone, onOpenSub, onOpenProject, onGo, onAddMem
    메인
 ------------------------------------------------------------------- */
 export default function WorkBoard() {
-  const [data, setDataRaw] = useState({ projects: [], memos: [], notes: [], dueOrder: [], dueManual: false, updatedAt: 0 });
+  const [data, setDataRaw] = useState({ projects: [], memos: [], notes: [], dueOrder: [], topOrder: [], dueManual: false, updatedAt: 0 });
   const [loaded, setLoaded] = useState(false);
   const [storageOK, setStorageOK] = useState(true);
   const [sync, setSync] = useState(() => loadSync());
@@ -957,7 +1016,7 @@ export default function WorkBoard() {
   });
 
   const normalize = (p) => ({
-    projects: p.projects || [], memos: p.memos || [], notes: p.notes || [], dueOrder: p.dueOrder || [],
+    projects: p.projects || [], memos: p.memos || [], notes: p.notes || [], dueOrder: p.dueOrder || [], topOrder: p.topOrder || [],
     dueManual: !!p.dueManual, updatedAt: p.updatedAt || 0,
   });
 
@@ -1111,9 +1170,45 @@ export default function WorkBoard() {
   const patchTodo = (pid, sid, tid, patch) => mapSub(pid, sid, (s) => ({ ...s, todos: s.todos.map((t) => (t.id === tid ? { ...t, ...patch } : t)) }));
 
   const addProject = (name) => setProjects((ps) => [...ps, { id: uid(), name, color: PALETTE[ps.length % PALETTE.length], subs: [], createdAt: Date.now() }]);
-  const addSub = (pid, name) => mapProject(pid, (p) => ({ ...p, subs: [...p.subs, { id: uid(), name, start: "", end: "", docMode: "plain", hasExpense: false, docs: {}, todos: [], createdAt: Date.now() }] }));
+  const addSub = (pid, name) => mapProject(pid, (p) => ({
+    ...p,
+    subs: [...p.subs, { id: uid(), name, color: HL[liveSubs(p).length % HL.length], start: "", end: "",
+      docMode: "plain", hasExpense: false, docs: {}, todos: [], createdAt: Date.now() }],
+  }));
   const addTodo = (pid, sid, text, due = "", dueTime = "", dueEnd = "") =>
     mapSub(pid, sid, (s) => ({ ...s, todos: [...s.todos, { id: uid(), text, due, dueTime, dueEnd, done: false, createdAt: Date.now() }] }));
+  /* 세부사업을 아직 안 정한 할 일은 '미분류' 보관함에 담깁니다 */
+  const quickTodo = (pid, text) => mapProject(pid, (p) => {
+    const item = { id: uid(), text, due: "", dueTime: "", dueEnd: "", done: false, createdAt: Date.now() };
+    const box = p.subs.find(isInbox);
+    if (box) return { ...p, subs: p.subs.map((s2) => (s2.id === box.id ? { ...s2, todos: [...s2.todos, item] } : s2)) };
+    return { ...p, subs: [{ id: uid(), name: "미분류", inbox: true, start: "", end: "", docMode: "none",
+      hasExpense: false, docs: {}, todos: [item], createdAt: Date.now() }, ...p.subs] };
+  });
+
+  /* 할 일을 세부사업으로 옮깁니다 */
+  const assignTodo = (pid, fromSid, tid, toSid) => mapProject(pid, (p) => {
+    const from = p.subs.find((x) => x.id === fromSid);
+    const item = from && from.todos.find((t) => t.id === tid);
+    if (!item) return p;
+    return { ...p, subs: p.subs.map((s2) =>
+      s2.id === fromSid ? { ...s2, todos: s2.todos.filter((t) => t.id !== tid) }
+      : s2.id === toSid ? { ...s2, todos: [...s2.todos, item] } : s2) };
+  });
+
+  /* 새 세부사업을 만들고 그 id를 돌려줍니다 */
+  const createSub = (pid, name) => {
+    const id = uid();
+    mapProject(pid, (p) => ({ ...p, subs: [...p.subs, { id, name, color: HL[liveSubs(p).length % HL.length],
+      start: "", end: "", docMode: "plain", hasExpense: false, docs: {}, todos: [], createdAt: Date.now() }] }));
+    return id;
+  };
+
+  const seedProjects = (names) =>
+    setProjects((ps) => [...ps, ...names.map((n, i) => ({
+      id: uid(), name: n, color: PALETTE[(ps.length + i) % PALETTE.length], subs: [], createdAt: Date.now() + i,
+    }))]);
+
   const addMemo = (text, due = "", dueTime = "", dueEnd = "") =>
     setData((d) => ({ ...d, memos: [...d.memos, { id: uid(), text, due, dueTime, dueEnd, createdAt: Date.now() }] }));
 
@@ -1296,10 +1391,36 @@ export default function WorkBoard() {
 
           {tab === "projects" && !project && (
             <ProjectList data={data} onOpen={(id) => { setOpenProject(id); setOpenSub(null); }} onAdd={addProject}
-              onDelete={(id) => setProjects((ps) => ps.filter((p) => p.id !== id))}
-              onColor={(id, c) => mapProject(id, (p) => ({ ...p, color: c }))}
               onReorder={(next) => setData((d) => ({ ...d, projects: next }))}
-              pct={projectPct} overdue={overdue} onGoDue={() => setTab("due")} />
+              overdue={overdue} onGoDue={() => setTab("due")}
+              onSeed={(names) => { seedProjects(names); flash(names.length + "개 폴더를 만들었습니다"); }}
+              onQuickTodo={quickTodo}
+              onToggleTodo={(pid, sid, tid) => {
+                patchTodo(pid, sid, tid, { done: true });
+                flash("완료 처리했습니다", () => patchTodo(pid, sid, tid, { done: false }));
+              }}
+              onEditTodo={(pid, sid, tid, text) => patchTodo(pid, sid, tid, { text })}
+              onMoveTodo={(pid, sid, tid, dir) => mapSub(pid, sid, (s2) => {
+                const i = s2.todos.findIndex((t) => t.id === tid), j = i + dir;
+                if (i < 0 || j < 0 || j >= s2.todos.length) return s2;
+                const next = s2.todos.slice();
+                [next[i], next[j]] = [next[j], next[i]];
+                return { ...s2, todos: next };
+              })}
+              onAssign={assignTodo}
+              onCreateSub={createSub}
+              topOrder={data.topOrder || []}
+              onTopOrder={(ids) => setData((d) => ({ ...d, topOrder: ids }))}
+              memos={data.memos}
+              onAddMemo={(t) => addMemo(t)}
+              onToggleMemo={(m) => removeMemo(m, "처리했습니다")}
+              onDropMemo={(mid, pid, sid) => {
+                const m = data.memos.find((x) => x.id === mid);
+                if (!m) return;
+                addTodo(pid, sid, m.text, m.due, m.dueTime, m.dueEnd);
+                setData((d) => ({ ...d, memos: d.memos.filter((x) => x.id !== mid) }));
+                flash("사업으로 옮겼습니다");
+              }} />
           )}
 
           {tab === "projects" && project && !sub && (
@@ -1308,6 +1429,7 @@ export default function WorkBoard() {
               onGoNotes={() => setTab("notes")}
               onOpen={setOpenSub} onAdd={(n) => addSub(project.id, n)}
               onDelete={(sid) => mapProject(project.id, (p) => ({ ...p, subs: p.subs.filter((s) => s.id !== sid) }))}
+              onDeleteProject={() => { setProjects((ps) => ps.filter((x) => x.id !== project.id)); setOpenProject(null); flash("사업을 삭제했습니다"); }}
               onReorder={(next) => mapProject(project.id, (p) => ({ ...p, subs: next }))}
               onColor={(c) => mapProject(project.id, (p) => ({ ...p, color: c }))}
               onRename={(name) => mapProject(project.id, (p) => ({ ...p, name }))} />
@@ -1413,66 +1535,338 @@ export default function WorkBoard() {
 }
 
 /* ------------------------------------------------------------------
-   사업 목록
+   사업 — 위: 취합 목록 · 가운데: 폴더 · 아래: 적어 두는 칸
 ------------------------------------------------------------------- */
-function ProjectList({ data, onOpen, onAdd, onDelete, onColor, onReorder, pct, overdue, onGoDue }) {
+const STARTER = ["집중심리클리닉", "특별교육", "수강명령", "기타"];
+
+/* 한 줄짜리 할 일 — 눌러서 수정, Ctrl+↑↓ 로 이동 */
+function MiniTodo({ todo, no, tag, right, onToggle, onEdit, onMove, dense }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(todo.text);
+  const commit = () => { const t = draft.trim(); if (t && t !== todo.text) onEdit(t); };
+  const key = (e) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      e.preventDefault(); commit(); onMove && onMove(e.key === "ArrowUp" ? -1 : 1); return;
+    }
+    if (e.key === "Enter") { e.preventDefault(); commit(); setEditing(false); }
+    if (e.key === "Escape") { setDraft(todo.text); setEditing(false); }
+  };
+  return (
+    <div className="flex items-start gap-1.5" style={{ padding: dense ? "2.5px 0" : "4px 0" }}>
+      <button onClick={onToggle} className="wb-btn flex items-center justify-center rounded shrink-0"
+        style={{ width: dense ? 14 : 16, height: dense ? 14 : 16, marginTop: 2,
+          border: "1.5px solid #C6CCC5", background: "transparent", cursor: "pointer" }} />
+      {no != null && (
+        <span className="shrink-0" style={{ fontSize: dense ? 10 : 11, fontWeight: 800, color: C.faint,
+          minWidth: 13, marginTop: 1, fontVariantNumeric: "tabular-nums", textAlign: "right" }}>{no}</span>
+      )}
+      {editing ? (
+        <input value={draft} autoFocus onChange={(e) => setDraft(e.target.value)} onKeyDown={key}
+          onBlur={() => { commit(); setEditing(false); }} className="flex-1 rounded"
+          style={{ padding: "1px 5px", fontSize: dense ? 12.5 : 13.5, border: "1px solid " + C.rule,
+            background: "#F7F8F6", outline: "none", color: C.ink, minWidth: 0 }} />
+      ) : (
+        <span onClick={() => { setDraft(todo.text); setEditing(true); }} className="flex-1 min-w-0"
+          style={{ fontSize: dense ? 12.5 : 13.5, lineHeight: 1.35, cursor: "text", wordBreak: "break-word" }}>
+          {todo.text}
+        </span>
+      )}
+      {tag}
+      {right}
+    </div>
+  );
+}
+
+/* 폴더에 떨어뜨렸을 때 뜨는 작은 선택창 */
+function AssignSheet({ project, base, title, onPick, onClose }) {
+  const dismiss = useDismiss(onClose);
+  const [name, setName] = useState("");
+  const subs = liveSubs(project);
+  return (
+    <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade"
+      style={{ background: "rgba(26,33,30,0.4)", zIndex: 60 }} {...dismiss}>
+      <div className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
+        style={{ maxWidth: 420, background: C.bg, border: "1px solid " + C.rule, maxHeight: "80vh", overflowY: "auto" }}>
+        <div className="flex items-start justify-between" style={{ padding: "15px 16px 10px" }}>
+          <div className="min-w-0">
+            <Label>{project.name}</Label>
+            <div className="truncate" style={{ fontSize: 14.5, fontWeight: 750, marginTop: 3 }}>{title}</div>
+          </div>
+          <button onClick={onClose} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>
+            <X size={19} />
+          </button>
+        </div>
+        <div style={{ padding: "0 16px 16px" }}>
+          {subs.length > 0 && (
+            <>
+              <Label>세부사업 고르기</Label>
+              <div className="flex flex-col gap-1.5" style={{ margin: "7px 0 14px" }}>
+                {subs.map((s, i) => (
+                  <button key={s.id} onClick={() => onPick(s.id)} className="wb-btn flex items-center gap-2 rounded-lg"
+                    style={{ padding: "9px 11px", background: subColor(s, i, base), border: "1px solid " + C.rule, borderLeft: "4px solid " + subEdge(i, base),
+                      cursor: "pointer", textAlign: "left" }}>
+                    <span className="truncate" style={{ fontSize: 13.5, fontWeight: 700, color: C.ink }}>{s.name}</span>
+                    <ChevronRight size={14} color={C.muted} style={{ marginLeft: "auto" }} />
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          <Label>{subs.length ? "새로 만들기" : "세부사업이 없습니다. 새로 만드세요"}</Label>
+          <div className="flex items-center gap-2 mt-1.5">
+            <input value={name} autoFocus={subs.length === 0} onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) onPick(null, name.trim()); }}
+              placeholder="새 세부사업 이름" className="flex-1 rounded-lg"
+              style={{ padding: "9px 11px", fontSize: 13.5, border: "1px solid " + C.rule, background: C.surface, outline: "none", color: C.ink, minWidth: 0 }} />
+            <Btn kind="solid" size="sm" icon={Plus} disabled={!name.trim()} onClick={() => name.trim() && onPick(null, name.trim())}>만들기</Btn>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function QuickAdd({ onAdd, placeholder }) {
+  const [v, setV] = useState("");
+  const submit = () => { const t = v.trim(); if (!t) return; onAdd(t); setV(""); };
+  return (
+    <div className="flex items-center gap-1" style={{ marginTop: 5 }}>
+      <Plus size={12} color={C.faint} strokeWidth={2.6} className="shrink-0" />
+      <input value={v} onChange={(e) => setV(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") submit(); }} onBlur={submit}
+        placeholder={placeholder} className="flex-1 rounded"
+        style={{ padding: "2px 4px", fontSize: 12, color: C.ink, background: "transparent", border: "none", outline: "none", minWidth: 0 }} />
+    </div>
+  );
+}
+
+function ProjectList({ data, onOpen, onAdd, onReorder, overdue, onGoDue, onSeed,
+                       onQuickTodo, onToggleTodo, onEditTodo, onMoveTodo,
+                       onAssign, onCreateSub, topOrder, onTopOrder,
+                       memos, onAddMemo, onDropMemo, onToggleMemo }) {
+  const [adding, setAdding] = useState(false);
+  const [assign, setAssign] = useState(null);   /* {pid, kind, ...} */
+  const [over, setOver] = useState(null);
+  const missing = STARTER.filter((n) => !data.projects.some((p) => p.name === n));
+
+  /* 사업 안의 할 일을 보관함 → 세부사업 순으로 */
+  const rowsOf = (p, pi) => {
+    const out = [];
+    p.subs.forEach((s) => s.todos.forEach((t) => {
+      if (!t.done) out.push({ ...t, sid: s.id, sName: s.name, inbox: isInbox(s), hl: isInbox(s) ? "" : subColor(s, liveSubs(p).findIndex((x) => x.id === s.id), colorOf(p, pi)),
+        edge: isInbox(s) ? "" : subEdge(liveSubs(p).findIndex((x) => x.id === s.id), colorOf(p, pi)) });
+    }));
+    return out;
+  };
+
+  /* 전체 취합 — 내가 정한 순서를 따릅니다 */
+  const all = [];
+  data.projects.forEach((p, i) => rowsOf(p, i).forEach((r) => all.push({ ...r, pid: p.id, pName: p.name, pColor: colorOf(p, i) })));
+  const rank = new Map((topOrder || []).map((id, i) => [id, i]));
+  all.sort((a, b) => (rank.has(a.id) ? rank.get(a.id) : 1e9) - (rank.has(b.id) ? rank.get(b.id) : 1e9));
+
+  const moveTop = (id, dir) => {
+    const ids = all.map((x) => x.id);
+    const i = ids.indexOf(id), j = i + dir;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    onTopOrder(ids);
+  };
+
   return (
     <div className="flex flex-col gap-3">
       {overdue > 0 && (
         <button onClick={onGoDue} className="wb-btn text-left" style={{ background: "none", border: "none", padding: 0 }}>
-          <Card style={{ padding: 13, background: C.sealSoft, borderColor: "#F0D5CF" }}>
+          <Card style={{ padding: 11, background: C.sealSoft, borderColor: "#F0D5CF" }}>
             <div className="flex items-center gap-2">
-              <AlertTriangle size={16} color={C.seal} strokeWidth={2.4} />
-              <span style={{ fontSize: 13.5, fontWeight: 700, color: C.seal }}>마감일이 지난 할 일 {overdue}건</span>
-              <ChevronRight size={15} color={C.seal} style={{ marginLeft: "auto" }} />
+              <AlertTriangle size={14} color={C.seal} strokeWidth={2.4} />
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: C.seal }}>마감 지난 할 일 {overdue}건</span>
+              <ChevronRight size={13} color={C.seal} style={{ marginLeft: "auto" }} />
             </div>
           </Card>
         </button>
       )}
 
-      {data.projects.length === 0 && (
-        <Card style={{ padding: 26, textAlign: "center" }}>
-          <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>맡은 사업부터 등록해 보세요</div>
-          <div style={{ fontSize: 13.5, color: C.muted, lineHeight: 1.6 }}>사업 안에 세부사업을 만들고, 세부사업마다 기간·필수서류·할 일을 관리합니다.</div>
+      {/* ── 전체 취합 목록 ── */}
+      {all.length > 0 && (
+        <Card style={{ padding: "11px 13px" }}>
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <ListChecks size={14} color={C.navy} strokeWidth={2.3} />
+            <Label>할 일 전체 {all.length}</Label>
+            <span style={{ fontSize: 10, color: C.faint, marginLeft: "auto" }}>Ctrl+↑↓ 순서</span>
+          </div>
+          <Sortable items={all} idOf={(r) => r.id} onReorder={(next) => onTopOrder(next.map((x) => x.id))}
+            renderRow={(r, handle) => (
+              <div className="flex items-start gap-1" style={{ borderTop: "1px solid #F1F3F0" }}>
+                <button {...handle} className="wb-btn shrink-0 flex items-center justify-center"
+                  style={{ ...handle.style, background: "none", border: "none", color: "#D5DAD3", padding: 0, width: 11, marginTop: 5 }}
+                  aria-label="순서 바꾸기">
+                  <GripVertical size={11} strokeWidth={2} />
+                </button>
+                <div className="flex-1 min-w-0">
+                  <MiniTodo todo={r} no={all.findIndex((x) => x.id === r.id) + 1} dense
+                    onToggle={() => onToggleTodo(r.pid, r.sid, r.id)}
+                    onEdit={(t) => onEditTodo(r.pid, r.sid, r.id, t)}
+                    onMove={(d) => moveTop(r.id, d)}
+                    tag={
+                      <span className="shrink-0 inline-flex items-center gap-1 rounded" style={{ marginTop: 1,
+                        background: r.hl || "#F1F3F0", padding: "1px 5px", fontSize: 9.5, fontWeight: 750, color: C.muted, maxWidth: 110 }}>
+                        <Dot color={r.pColor} size={5} />
+                        <span className="truncate">{r.pName}</span>
+                      </span>
+                    } />
+                </div>
+              </div>
+            )} />
         </Card>
       )}
 
+      {missing.length > 0 && (
+        <Card style={{ padding: 12 }}>
+          <div style={{ fontSize: 12.5, color: C.muted, marginBottom: 8 }}>{missing.join(" · ")}</div>
+          <Btn kind="solid" size="sm" icon={Plus} onClick={() => onSeed(missing)}>{missing.length}개 폴더 만들기</Btn>
+        </Card>
+      )}
+
+      {/* ── 폴더 격자 ── */}
       <Sortable items={data.projects} idOf={(p) => p.id} onReorder={onReorder}
+        className="grid grid-cols-2" style={{ gap: 8, alignItems: "start" }}
         renderRow={(p, handle) => {
           const i = data.projects.findIndex((x) => x.id === p.id);
           const color = colorOf(p, i);
-          const docLeft = p.subs.reduce((a, s) => { const st = subStats(s); return a + (st.docTotal - st.docDone); }, 0);
-          const per = pct(p);
+          const rows = rowsOf(p, i);
+          const chips = liveSubs(p).filter((s) => !subDoneAll(s));
+          const isOver = over === p.id;
           return (
-            <div style={{ marginBottom: 12 }}>
-              <Card style={{ padding: 15, borderLeft: `4px solid ${color}` }}>
-                <div className="flex items-start gap-2">
-                  <Handle props={handle} />
-                  <button onClick={() => onOpen(p.id)} className="wb-btn flex-1 text-left min-w-0" style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}>
-                    <div className="flex items-center justify-between gap-3 mb-2.5">
-                      <span style={{ fontSize: 16.5, fontWeight: 760, letterSpacing: "-0.02em" }}>{p.name}</span>
-                      <ChevronRight size={18} color={C.faint} />
-                    </div>
-                    <div className="flex items-center gap-1.5 flex-wrap mb-2.5">
-                      <Chip tone="navy">세부사업 {p.subs.length}</Chip>
-                      {docLeft > 0 ? <Chip tone="seal">서류 {docLeft}건 남음</Chip> : p.subs.length > 0 && <Chip tone="green" icon={Check}>서류 완비</Chip>}
-                    </div>
-                    <div className="flex items-center gap-2.5">
-                      <Bar pct={per} color={color} />
-                      <span style={{ fontSize: 12, fontWeight: 750, color: per === 100 ? C.green : C.muted, minWidth: 32, textAlign: "right" }}>{per}%</span>
-                    </div>
-                  </button>
+            <div className="rounded-xl"
+              onDragOver={(e) => { e.preventDefault(); setOver(p.id); }}
+              onDragLeave={() => setOver((x) => (x === p.id ? null : x))}
+              onDrop={(e) => {
+                e.preventDefault(); setOver(null);
+                const mid = e.dataTransfer.getData("text/memo");
+                if (mid) setAssign({ pid: p.id, kind: "memo", mid });
+              }}
+              style={{ background: isOver ? "#EEF3EE" : C.surface,
+                border: "1px solid " + (isOver ? C.green : C.rule), borderTop: "3px solid " + color,
+                padding: "8px 9px 9px", boxShadow: "0 1px 2px rgba(26,33,30,0.04)", transition: "background .12s ease" }}>
+
+              <div className="flex items-center gap-1" style={{ marginBottom: 5 }}>
+                <button {...handle} className="wb-btn shrink-0 flex items-center justify-center"
+                  style={{ ...handle.style, background: "none", border: "none", color: "#CBD1C9", padding: 0, width: 11 }}
+                  aria-label="사업 순서 바꾸기">
+                  <GripVertical size={11} strokeWidth={2} />
+                </button>
+                <button onClick={() => onOpen(p.id)} className="wb-btn flex-1 min-w-0 flex items-center gap-1"
+                  style={{ background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
+                  <span className="truncate" style={{ fontSize: 13, fontWeight: 780 }}>{p.name}</span>
+                  <ChevronRight size={12} color={C.faint} className="shrink-0" />
+                </button>
+              </div>
+
+              {/* 진행 중인 세부사업 이름표 */}
+              {chips.length > 0 && (
+                <div className="flex items-center gap-1 flex-wrap" style={{ marginBottom: 5 }}>
+                  {chips.map((s) => {
+                    const idx = p.subs.findIndex((x) => x.id === s.id);
+                    return (
+                      <span key={s.id} className="rounded" style={{
+                        background: subColor(s, liveSubs(p).findIndex((x) => x.id === s.id), color), color: C.ink,
+                        borderLeft: "3px solid " + subEdge(liveSubs(p).findIndex((x) => x.id === s.id), color),
+                        fontSize: 9.5, fontWeight: 750, padding: "1.5px 5px", maxWidth: "100%" }}>
+                        <span className="truncate" style={{ display: "block" }}>{s.name}</span>
+                      </span>
+                    );
+                  })}
                 </div>
-                <div className="flex items-center justify-between mt-2 flex-wrap gap-2">
-                  <ColorPicker color={color} onPick={(c) => onColor(p.id, c)} />
-                  <DeleteBtn onDelete={() => onDelete(p.id)} label="사업 삭제" />
-                </div>
-              </Card>
+              )}
+
+              {rows.length === 0 ? (
+                <div style={{ fontSize: 11, color: C.faint, padding: "2px 0" }}>할 일 없음</div>
+              ) : rows.slice(0, 10).map((r) => (
+                <MiniTodo key={r.id} todo={r} dense
+                  onToggle={() => onToggleTodo(p.id, r.sid, r.id)}
+                  onEdit={(t) => onEditTodo(p.id, r.sid, r.id, t)}
+                  onMove={(d) => onMoveTodo(p.id, r.sid, r.id, d)}
+                  right={r.inbox ? (
+                    <button onClick={() => setAssign({ pid: p.id, kind: "todo", sid: r.sid, tid: r.id, text: r.text })}
+                      className="wb-btn shrink-0 flex items-center justify-center rounded"
+                      style={{ width: 16, height: 16, marginTop: 1, background: "#F1F3F0", border: "none",
+                        color: C.muted, cursor: "pointer" }} title="세부사업 연결">
+                      <CornerDownRight size={10} strokeWidth={2.6} />
+                    </button>
+                  ) : (
+                    <span className="shrink-0 rounded" title={r.sName}
+                      style={{ width: 10, height: 10, marginTop: 4, background: r.hl, border: "1.5px solid " + r.edge }} />
+                  )} />
+              ))}
+              {rows.length > 10 && (
+                <button onClick={() => onOpen(p.id)} className="wb-btn"
+                  style={{ background: "none", border: "none", color: C.faint, fontSize: 10, fontWeight: 650, cursor: "pointer", padding: "3px 0 0" }}>
+                  외 {rows.length - 10}건
+                </button>
+              )}
+
+              <QuickAdd placeholder="할 일 추가" onAdd={(t) => onQuickTodo(p.id, t)} />
             </div>
           );
         }} />
 
-      <Card style={{ padding: 13 }}><AddLine placeholder="새 사업 이름 (예: 청소년안전망 운영)" onAdd={onAdd} /></Card>
+      {adding ? (
+        <Card style={{ padding: 12 }}>
+          <AddLine placeholder="새 사업 이름" onAdd={(t) => { onAdd(t); setAdding(false); }} />
+        </Card>
+      ) : (
+        <button onClick={() => setAdding(true)} className="wb-btn inline-flex items-center justify-center gap-1.5 rounded-xl"
+          style={{ background: C.surface, border: "1px dashed #C9CFC7", color: C.muted,
+            fontSize: 12.5, fontWeight: 650, padding: "9px 0", cursor: "pointer" }}>
+          <Plus size={14} strokeWidth={2.4} /> 사업 추가
+        </button>
+      )}
+
+      {/* ── 아래: 생각나는 대로 ── */}
+      <Card style={{ padding: "11px 13px" }}>
+        <div className="flex items-center gap-1.5 mb-1.5">
+          <Inbox size={14} color={C.navy} strokeWidth={2.3} />
+          <Label>생각나는 대로</Label>
+          {memos.length > 0 && (
+            <span style={{ fontSize: 10, color: C.faint, marginLeft: "auto" }}>폴더로 끌어다 놓기</span>
+          )}
+        </div>
+        {memos.map((m) => (
+          <div key={m.id} draggable
+            onDragStart={(e) => { e.dataTransfer.setData("text/memo", m.id); e.dataTransfer.effectAllowed = "move"; }}
+            className="flex items-start gap-1.5" style={{ padding: "3px 0", borderTop: "1px solid #F1F3F0", cursor: "grab" }}>
+            <GripVertical size={11} color="#D5DAD3" strokeWidth={2} style={{ marginTop: 3, flexShrink: 0 }} />
+            <button onClick={() => onToggleMemo(m)} className="wb-btn flex items-center justify-center rounded shrink-0"
+              style={{ width: 14, height: 14, marginTop: 2, border: "1.5px solid #C6CCC5", background: "transparent", cursor: "pointer" }} />
+            <span className="flex-1 min-w-0" style={{ fontSize: 12.5, lineHeight: 1.35, wordBreak: "break-word" }}>{m.text}</span>
+            <select value="" onChange={(e) => e.target.value && setAssign({ pid: e.target.value, kind: "memo", mid: m.id })}
+              className="shrink-0 rounded" title="사업으로 보내기"
+              style={{ fontSize: 10, color: C.muted, background: "#F1F3F0", border: "none", padding: "1px 3px", marginTop: 1, cursor: "pointer" }}>
+              <option value="">→</option>
+              {data.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+        ))}
+        <QuickAdd placeholder="여기에 적어 두세요" onAdd={onAddMemo} />
+      </Card>
+
+      {assign && (() => {
+        const p = data.projects.find((x) => x.id === assign.pid);
+        if (!p) return null;
+        const finish = (sid, newName) => {
+          const target = sid || onCreateSub(p.id, newName);
+          if (assign.kind === "memo") onDropMemo(assign.mid, p.id, target);
+          else onAssign(p.id, assign.sid, assign.tid, target);
+          setAssign(null);
+        };
+        return (
+          <AssignSheet project={p} base={colorOf(p, data.projects.findIndex((x) => x.id === p.id))}
+            title={assign.text || "어느 세부사업으로 보낼까요"}
+            onPick={finish} onClose={() => setAssign(null)} />
+        );
+      })()}
     </div>
   );
 }
@@ -1480,7 +1874,7 @@ function ProjectList({ data, onOpen, onAdd, onDelete, onColor, onReorder, pct, o
 /* ------------------------------------------------------------------
    세부사업 목록
 ------------------------------------------------------------------- */
-function SubList({ project, color, notes, onOpen, onAdd, onDelete, onRename, onReorder, onColor, onGoNotes }) {
+function SubList({ project, color, notes, onOpen, onAdd, onDelete, onDeleteProject, onRename, onReorder, onColor, onGoNotes }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(project.name);
   const [openNotes, setOpenNotes] = useState(false);
@@ -1494,6 +1888,7 @@ function SubList({ project, color, notes, onOpen, onAdd, onDelete, onRename, onR
             className="wb-btn inline-flex items-center gap-1" style={{ background: "none", border: "none", color: C.muted, fontSize: 12.5, fontWeight: 650, cursor: "pointer" }}>
             <Pencil size={13} /> {editing ? "이름 저장" : "사업명 수정"}
           </button>
+          <DeleteBtn onDelete={onDeleteProject} label="사업 삭제" />
         </div>
       </div>
       {editing && (
@@ -1994,7 +2389,7 @@ function NotesView({ notes, projects, onAdd, onPatch, onDelete, onReorder, onOpe
         <Label>새 메모</Label>
         <textarea value={v} onChange={(e) => setV(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(); }} rows={2}
-          placeholder="회의에서 나온 이야기, 참고할 연락처, 다음에 볼 자료…"
+          placeholder=""
           className="w-full rounded-xl mt-2"
           style={{ padding: "11px 13px", fontSize: 14.5, lineHeight: 1.6, color: C.ink, background: "#F7F8F6",
             border: "1px solid " + C.rule, outline: "none", resize: "vertical" }} />
@@ -2286,7 +2681,7 @@ function MemoView({ memos, onAdd, onDone, onDelete, onPatch, onReorder, onMove, 
         <Label>새 할 일</Label>
         <textarea value={v} onChange={(e) => setV(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(); }} rows={2}
-          placeholder="전화 회신, 공문 확인, 강사 섭외…" className="w-full rounded-xl mt-2"
+          placeholder="" className="w-full rounded-xl mt-2"
           style={{ padding: "11px 13px", fontSize: 14.5, lineHeight: 1.5, color: C.ink, background: "#F7F8F6",
             border: "1px solid " + C.rule, outline: "none", resize: "vertical" }} />
         <div className="mt-2"><DueChip item={due} onClick={() => setEditingNew(!editingNew)} /></div>
