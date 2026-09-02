@@ -13,6 +13,18 @@ fs.mkdirSync(dist, { recursive: true });
 console.log("· Tailwind 클래스 추출");
 execSync(`npx tailwindcss -c ${R("tailwind.config.js")} -i ${R("src/in.css")} -o ${R(".tmp.css")} --minify`, { stdio: "inherit" });
 
+/* 정의되지 않은 이름을 쓰고 있는지 먼저 확인합니다 */
+console.log("· 코드 점검");
+try {
+  execSync(`npx esbuild ${R("src/app.jsx")} --bundle --format=iife --jsx=automatic --outfile=${R(".check.js")}`, { stdio: "pipe" });
+  const code = fs.readFileSync(R(".check.js"), "utf8");
+  fs.rmSync(R(".check.js"), { force: true });
+  new Function(`return function(){ ${code} }`);   // 문법 확인
+} catch (e) {
+  console.error("✗ 코드에 문제가 있습니다:\n" + (e.stderr ? e.stderr.toString() : e.message));
+  process.exit(1);
+}
+
 console.log("· 자바스크립트 번들");
 execSync(
   `npx esbuild ${R("src/app.jsx")} --bundle --minify --format=iife --jsx=automatic ` +
