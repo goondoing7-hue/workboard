@@ -5,7 +5,7 @@ import {
   Pencil, Wallet, WalletMinimal, ListChecks, Download, Upload,
   CornerDownLeft, GripVertical, ArrowUpDown, RotateCcw, LayoutGrid,
   Stamp, Sunrise, CircleDot, Palette, Cloud, CloudOff, RefreshCw, Copy, ShieldCheck, HardDriveDownload,
-  LogIn, HardDrive, Database, StickyNote, Pin, FileX, CornerDownRight, Bell,
+  LogIn, HardDrive, Database, StickyNote, Pin, FileX, CornerDownRight, Bell, Globe,
   Star, Bold, Italic, Underline, Baseline, ImagePlus, MoreVertical, CheckSquare
 } from "lucide-react";
 
@@ -267,7 +267,7 @@ const VIEW_KEY = "workboard:view";
 const lastView = () => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch (e) { return {}; } };
 const saveView = (v) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch (e) {} };
 
-const APP_VERSION = "2026.09.04";
+const APP_VERSION = "2026.09.04b";
 const STORAGE_KEY = "workboard:data";
 
 /* 저장소 — 브라우저(localStorage)를 쓰고, Claude 아티팩트 안에서는 그쪽 저장소를 씁니다 */
@@ -485,7 +485,7 @@ function ColorPicker({ color, onPick }) {
 /* ------------------------------------------------------------------
    드래그 정렬
 ------------------------------------------------------------------- */
-function Sortable({ items, idOf, onReorder, renderRow, className, style, deferred }) {
+function Sortable({ items, idOf, onReorder, renderRow, className, style, rowStyle, deferred }) {
   const [dragId, setDragId] = useState(null);
   const [overId, setOverId] = useState(null);
   const listRef = useRef(null);
@@ -555,6 +555,7 @@ function Sortable({ items, idOf, onReorder, renderRow, className, style, deferre
         return (
           <div key={id} data-sortid={id}
             style={{
+              ...(rowStyle || {}),
               opacity: on ? 0.4 : 1,
               borderTop: deferred ? (mark && !below ? line : "2px solid transparent")
                 : (on ? line : "2px solid transparent"),
@@ -919,9 +920,9 @@ function HomeView({ data, rows, onDone, onOpenSub, onOpenProject, onGo, onAddMem
 
       {/* 숫자 요약 */}
       <div className="flex gap-2">
-        <Stat n={overdue.length} t="지연" tone="seal" onClick={() => onGo("due")} />
-        <Stat n={today.length} t="오늘" tone="amber" onClick={() => onGo("due")} />
-        <Stat n={week.length} t="7일 내" tone="navy" onClick={() => onGo("due")} />
+        <Stat n={overdue.length} t="지연" tone="seal" onClick={() => onGo("projects")} />
+        <Stat n={today.length} t="오늘" tone="amber" onClick={() => onGo("projects")} />
+        <Stat n={week.length} t="7일 내" tone="navy" onClick={() => onGo("projects")} />
         <Stat n={totalDocLeft} t="서류" tone="seal" onClick={() => onGo("projects")} />
         <Stat n={data.memos.length} t="적어둠" tone="navy" onClick={() => onGo("projects")} />
       </div>
@@ -931,10 +932,7 @@ function HomeView({ data, rows, onDone, onOpenSub, onOpenProject, onGo, onAddMem
         <div className="flex items-center gap-2 mb-2.5">
           <CalendarDays size={14} color={C.navy} strokeWidth={2.3} />
           <Label>이번 주</Label>
-          <button onClick={() => onGo("due")} className="wb-btn inline-flex items-center"
-            style={{ background: "none", border: "none", color: C.faint, fontSize: 11, fontWeight: 650, cursor: "pointer", marginLeft: "auto" }}>
-            전체 마감 <ChevronRight size={12} />
-          </button>
+
         </div>
         <div className="grid grid-cols-5" style={{ gap: 5 }}>
           {days.map((d) => (
@@ -1029,7 +1027,7 @@ export default function WorkBoard() {
   const [syncState, setSyncState] = useState("off");   // off | syncing | ok | error
   const [syncMsg, setSyncMsg] = useState("");
   const [lastBackup, setLastBackup] = useState(() => Number(localStorage.getItem(BACKUP_KEY) || 0));
-  const [tab, setTab] = useState(() => (["home", "projects", "due", "notes"].includes(lastView().tab) ? lastView().tab : "home"));
+  const [tab, setTab] = useState(() => (["home", "projects", "notes"].includes(lastView().tab) ? lastView().tab : "home"));
   const [openProject, setOpenProject] = useState(() => lastView().pid || null);
   const [openSub, setOpenSub] = useState(() => lastView().sid || null);
   const [showSettings, setShowSettings] = useState(false);
@@ -1340,7 +1338,7 @@ export default function WorkBoard() {
     : sub ? { title: sub.name, sup: project.name, back: () => setOpenSub(null), color: colorOf(project, projectIdx) }
     : project ? { title: project.name, sup: "사업", back: () => setOpenProject(null), color: colorOf(project, projectIdx) } : null;
 
-  const titleOf = { home: "메인보드", projects: "사업 관리", due: "마감", notes: "메모함" }[tab] || "메인보드";
+  const titleOf = { home: "메인보드", projects: "사업 관리", notes: "메모함" }[tab] || "메인보드";
 
   return (
     <div style={{ fontFamily: FONT, background: C.bg, minHeight: "100vh", color: C.ink }}>
@@ -1357,6 +1355,9 @@ export default function WorkBoard() {
         .wb-sheet { animation: wbUp .22s cubic-bezier(.2,.8,.3,1) both; }
         input, textarea { font-family: ${FONT}; }
         @keyframes wbSpin { to { transform: rotate(360deg) } }
+        .wb-masonry { column-count: 2; column-gap: 10px; }
+        @media (min-width: 620px) { .wb-masonry { column-count: 3; } }
+        .wb-masonry > div { margin-bottom: 10px; }
         .wb-note img, .wb-note-preview img { max-width: 100%; border-radius: 10px; display: block; margin: 6px 0 }
         .wb-note:empty:before { content: "여기에 적으세요"; color: ${C.faint} }
         .wb-note-preview b, .wb-note b { font-weight: 750 }
@@ -1555,13 +1556,6 @@ export default function WorkBoard() {
               onReorderTodos={(openNext) => mapSub(project.id, sub.id, (s) => ({ ...s, todos: [...openNext, ...s.todos.filter((t) => t.done)] }))} />
           )}
 
-          {tab === "due" && (
-            <DueView rows={dueRows} manual={data.dueManual}
-              onManual={(v) => setData((d) => ({ ...d, dueManual: v, dueOrder: v && d.dueOrder.length === 0 ? dueRows.map((r) => r.id) : d.dueOrder }))}
-              onReorder={(next) => setData((d) => ({ ...d, dueOrder: next.map((r) => r.id) }))}
-              onDone={doneRow} onPatch={(r, patch) => patchTodo(r.pid, r.sid, r.id, patch)} onOpen={openSubPage} />
-          )}
-
           {tab === "notes" && (
             <NotesView notes={data.notes || []} projects={data.projects}
               onAdd={addNote} onPatch={patchNote} onDelete={removeNote}
@@ -1576,7 +1570,6 @@ export default function WorkBoard() {
         <div className="flex" style={{ maxWidth: 760, margin: "0 auto", padding: "8px 8px 14px" }}>
           {[{ k: "home", t: "메인", i: LayoutGrid, badge: 0 },
             { k: "projects", t: "사업", i: FolderClosed, badge: 0 },
-            { k: "due", t: "마감", i: CalendarDays, badge: overdue },
             { k: "notes", t: "메모함", i: StickyNote, badge: 0 }].map((x) => {
             const on = tab === x.k;
             return (
@@ -1709,6 +1702,44 @@ function MiniTodo({ todo, no, tag, right, onToggle, onEdit, onMove, onAddAfter, 
       {tag}
       {right}
     </div>
+  );
+}
+
+/* 글 안의 주소를 찾아 미리보기로 보여 줍니다 */
+const URL_RE = /https?:\/\/[^\s<>"')\]]+/g;
+const findLinks = (text) => {
+  const out = [];
+  const seen = new Set();
+  (String(text || "").match(URL_RE) || []).forEach((u) => {
+    const clean = u.replace(/[.,)]+$/, "");
+    if (seen.has(clean)) return;
+    seen.add(clean);
+    try { out.push({ url: clean, host: new URL(clean).hostname.replace(/^www\./, "") }); } catch (e) {}
+  });
+  return out;
+};
+
+function LinkCard({ link }) {
+  const [bad, setBad] = useState(false);
+  return (
+    <a href={link.url} target="_blank" rel="noreferrer noopener"
+      onClick={(e) => e.stopPropagation()}
+      className="flex items-center gap-2 rounded-lg"
+      style={{ background: "rgba(255,255,255,0.75)", border: "1px solid " + C.rule,
+        padding: "7px 9px", marginTop: 6, textDecoration: "none", color: C.ink }}>
+      {bad ? (
+        <Globe size={14} color={C.faint} strokeWidth={2.2} className="shrink-0" />
+      ) : (
+        <img src={"https://www.google.com/s2/favicons?sz=64&domain=" + link.host} alt=""
+          onError={() => setBad(true)}
+          style={{ width: 16, height: 16, borderRadius: 3, flexShrink: 0 }} />
+      )}
+      <span className="flex-1 min-w-0">
+        <span className="block truncate" style={{ fontSize: 11.5, fontWeight: 700 }}>{link.host}</span>
+        <span className="block truncate" style={{ fontSize: 10, color: C.faint }}>{link.url}</span>
+      </span>
+      <ChevronRight size={13} color={C.faint} className="shrink-0" />
+    </a>
   );
 }
 
@@ -1930,7 +1961,7 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
   return (
     <div className="flex flex-col gap-3">
       {overdue > 0 && (
-        <button onClick={onGoDue} className="wb-btn text-left" style={{ background: "none", border: "none", padding: 0 }}>
+        <button onClick={() => {}} className="wb-btn text-left" style={{ background: "none", border: "none", padding: 0, cursor: "default" }}>
           <Card style={{ padding: 11, background: C.sealSoft, borderColor: "#F0D5CF" }}>
             <div className="flex items-center gap-2">
               <AlertTriangle size={14} color={C.seal} strokeWidth={2.4} />
@@ -2438,66 +2469,6 @@ function SubDetail({ sub, color, onPatch, onToggleDoc, onAddTodo, onPatchTodo, o
 }
 
 /* ------------------------------------------------------------------
-   마감
-------------------------------------------------------------------- */
-function DueView({ rows, manual, onManual, onReorder, onDone, onPatch, onOpen }) {
-  const rowNode = (r, handle) => (
-    <div style={{ borderTop: "1px solid " + C.rule }}>
-      <TodoRow todo={r} handle={handle} pathNode={<PathTag r={r} onClick={() => onOpen(r.pid, r.sid)} />}
-        onToggle={() => onDone(r)} onPatch={(patch) => onPatch(r, patch)} />
-    </div>
-  );
-  const groups = [
-    { k: "over", t: "지난 마감", rows: rows.filter((r) => dayDiff(r.due) < 0) },
-    { k: "today", t: "오늘", rows: rows.filter((r) => dayDiff(r.due) === 0) },
-    { k: "week", t: "7일 이내", rows: rows.filter((r) => dayDiff(r.due) > 0 && dayDiff(r.due) <= 7) },
-    { k: "later", t: "그 이후", rows: rows.filter((r) => dayDiff(r.due) > 7) },
-  ].filter((g) => g.rows.length > 0);
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex rounded-xl" style={{ background: "#F1F3F0", padding: 3, gap: 3 }}>
-        {[{ v: false, t: "날짜순", i: CalendarDays }, { v: true, t: "내가 정한 순서", i: ArrowUpDown }].map((o) => {
-          const on = manual === o.v;
-          return (
-            <button key={String(o.v)} onClick={() => onManual(o.v)} className="wb-btn flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg"
-              style={{ padding: "8px 6px", fontSize: 13, fontWeight: 700, cursor: "pointer", background: on ? C.surface : "transparent",
-                color: on ? C.ink : C.faint, border: "1px solid " + (on ? C.rule : "transparent") }}>
-              <o.i size={14} strokeWidth={2.3} /> {o.t}
-            </button>
-          );
-        })}
-      </div>
-
-      {rows.length === 0 ? (
-        <Card style={{ padding: 26, textAlign: "center", color: C.muted, fontSize: 13.5, lineHeight: 1.6 }}>
-          마감일이 걸린 할 일이 없습니다.<br />할 일에 마감을 지정하면 여기에 모입니다.
-        </Card>
-      ) : manual ? (
-        <>
-          <div className="flex items-center gap-1" style={{ fontSize: 11.5, color: C.faint }}>
-            <GripVertical size={12} /> 손잡이를 끌어 처리할 순서를 정합니다 · 체크하면 사업에서도 완료됩니다
-          </div>
-          <Card style={{ padding: "4px 15px" }}>
-            <Sortable items={rows} idOf={(r) => r.id} onReorder={onReorder} renderRow={rowNode} />
-          </Card>
-        </>
-      ) : (
-        groups.map((g) => (
-          <div key={g.k}>
-            <div className="flex items-center gap-2 mb-2">
-              <Label style={{ color: g.k === "over" ? C.seal : g.k === "today" ? C.amber : C.faint }}>{g.t}</Label>
-              <span style={{ fontSize: 11.5, color: C.faint, fontWeight: 700 }}>{g.rows.length}</span>
-            </div>
-            <Card style={{ padding: "4px 15px" }}>{g.rows.map((r) => <div key={r.id}>{rowNode(r, null)}</div>)}</Card>
-          </div>
-        ))
-      )}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------
    메모함 — 서식, 이미지, 체크리스트
 ------------------------------------------------------------------- */
 const NOTE_COLORS = [
@@ -2627,6 +2598,9 @@ function NoteEditor({ note, onPatch, onClose, onDelete, onDuplicate, projects })
               <SubChecklist subs={items} onChange={setItems} />
             </div>
           )}
+
+          {findLinks(mode === "check" ? items.map((x) => x.text).join(" ") : (htmlToText(note.html) || note.text)).slice(0, 5)
+            .map((l) => <LinkCard key={l.url} link={l} />)}
 
           {projects.length > 0 && (
             <div style={{ margin: "12px 0 4px" }}>
@@ -2811,15 +2785,16 @@ function NotesView({ notes, projects, onAdd, onPatch, onDelete, onReorder, onOpe
             : "이 사업으로 묶인 메모가 없습니다."}
         </Card>
       ) : (
-        <Sortable items={shown} idOf={(n) => n.id}
+        <Sortable items={shown} idOf={(n) => n.id} className="wb-masonry"
+          rowStyle={{ breakInside: "avoid", WebkitColumnBreakInside: "avoid", pageBreakInside: "avoid", display: "block" }}
           onReorder={(next) => onReorder(filter === "all" ? next : next.concat(notes.filter((n) => (n.pid || "") !== filter)))}
           renderRow={(n, handle) => {
             const info = infoOf(n.pid);
             const items = n.items || [];
             const done = items.filter((x) => x.done).length;
             return (
-              <div style={{ marginBottom: 10 }}>
-                <Card style={{ padding: 12, background: noteBg(n.color),
+              <div>
+                <Card style={{ padding: 11, background: noteBg(n.color),
                   borderLeft: info ? "3px solid " + info.color : "1px solid " + C.rule }}>
                   <div className="flex items-start gap-2">
                     <Handle props={handle} />
@@ -2853,6 +2828,9 @@ function NotesView({ notes, projects, onAdd, onPatch, onDelete, onReorder, onOpe
                           style={{ fontSize: 14, lineHeight: 1.6, wordBreak: "break-word", maxHeight: 150, overflow: "hidden" }}
                           dangerouslySetInnerHTML={{ __html: n.html || escapeHtml(n.text) }} />
                       )}
+
+                      {findLinks(n.mode === "check" ? items.map((x) => x.text).join(" ") : (htmlToText(n.html) || n.text)).slice(0, 3)
+                        .map((l) => <LinkCard key={l.url} link={l} />)}
 
                       <div className="flex items-center justify-between mt-2">
                         <span style={{ fontSize: 11, color: C.faint }}>
