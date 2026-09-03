@@ -260,7 +260,7 @@ const VIEW_KEY = "workboard:view";
 const lastView = () => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch (e) { return {}; } };
 const saveView = (v) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch (e) {} };
 
-const APP_VERSION = "2026.09.02c";
+const APP_VERSION = "2026.09.03";
 const STORAGE_KEY = "workboard:data";
 
 /* 저장소 — 브라우저(localStorage)를 쓰고, Claude 아티팩트 안에서는 그쪽 저장소를 씁니다 */
@@ -282,12 +282,21 @@ const store = {
 /* ------------------------------------------------------------------
    유틸
 ------------------------------------------------------------------- */
-/* "1. 할 일" 처럼 번호가 붙은 여러 줄을 한 건씩 떼어 냅니다 */
-const splitList = (text) =>
-  String(text || "")
-    .split(/\r?\n/)
-    .map((l) => l.replace(/^[\s\u00A0]*(?:[-*•·▪◦]|\(?\d{1,3}[.)]|[①-⑳]|[가-힣][.)])[\s\u00A0]*/, "").trim())
-    .filter(Boolean);
+/* 번호나 기호가 붙은 목록일 때만 한 건씩 떼어 냅니다.
+   그냥 줄만 바꾼 글은 하나의 할 일로 그대로 둡니다. */
+const MARK = /^[\s\u00A0]*(?:[-*•·▪◦]|\(?\d{1,3}[.)]|[①-⑳])[\s\u00A0]+/;
+const stripMark = (l) => l.replace(MARK, "").trim();
+
+const splitList = (text) => {
+  const raw = String(text || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (raw.length <= 1) return raw.map(stripMark).filter(Boolean);
+  const marked = raw.filter((l) => MARK.test(l)).length;
+  /* 절반 이상이 번호·기호로 시작할 때만 나눕니다 */
+  if (marked >= 2 && marked >= Math.ceil(raw.length * 0.5)) {
+    return raw.map(stripMark).filter(Boolean);
+  }
+  return [String(text).replace(/\s+$/, "").replace(/^\s+/, "")];
+};
 
 /* 마우스는 더블클릭, 손가락은 한 번 탭으로 편집합니다 */
 const isTouch = () => typeof window !== "undefined" && window.matchMedia
@@ -323,6 +332,21 @@ const dueText = (t) => {
   return `${fmtDateK(t.due)}${tt ? " · " + tt : ""} · ${dLabel(t.due)}`;
 };
 /* 날짜 → 시각 순. 시간 없는 항목은 그날의 맨 뒤로 */
+/* 오늘 · 내일 · 다음 세 칸으로 나눕니다 */
+const BUCKETS = [
+  { k: 0, t: "오늘", bg: "#FBEDEA", fg: "#C2402F" },
+  { k: 1, t: "내일", bg: "#FAF1E0", fg: "#B0731F" },
+  { k: 2, t: "다음", bg: "#F1F3F0", fg: "#6C7570" },
+];
+const bucketOf = (t) => {
+  const d = dayDiff(t.due);
+  if (d === null) return 2;
+  if (d <= 0) return 0;
+  if (d === 1) return 1;
+  return 2;
+};
+const setBucket = (k) => (k === 0 ? { due: todayISO() } : k === 1 ? { due: addDays(1) } : { due: "", dueTime: "", dueEnd: "" });
+
 const sortKey = (t) => `${t.due}T${t.dueTime || "99:99"}`;
 const byTime = (a, b) => sortKey(a).localeCompare(sortKey(b));
 
@@ -454,54 +478,82 @@ function ColorPicker({ color, onPick }) {
 /* ------------------------------------------------------------------
    드래그 정렬
 ------------------------------------------------------------------- */
-function Sortable({ items, idOf, onReorder, renderRow, className, style }) {
+function Sortable({ items, idOf, onReorder, renderRow, className, style, deferred }) {
   const [dragId, setDragId] = useState(null);
+  const [overId, setOverId] = useState(null);
   const listRef = useRef(null);
   const itemsRef = useRef(items);
   itemsRef.current = items;
+  const overRef = useRef(null);
+
+  const idx = (id) => itemsRef.current.findIndex((i) => idOf(i) === id);
 
   const down = (e, id) => {
     if (e.button != null && e.button !== 0) return;
     e.preventDefault();
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
     setDragId(id);
+    setOverId(id);
+    overRef.current = id;
   };
+
   const move = (e) => {
     if (!dragId) return;
     const el = document.elementFromPoint(e.clientX, e.clientY);
     const row = el && el.closest ? el.closest("[data-sortid]") : null;
     if (!row || !listRef.current || !listRef.current.contains(row)) return;
-    const overId = row.getAttribute("data-sortid");
-    if (!overId || overId === dragId) return;
-    const arr = itemsRef.current;
-    const from = arr.findIndex((i) => idOf(i) === dragId);
-    const to = arr.findIndex((i) => idOf(i) === overId);
+    const id = row.getAttribute("data-sortid");
+    if (!id) return;
+
+    if (deferred) {                       /* 손을 뗄 때 옮깁니다 */
+      if (id !== overRef.current) { overRef.current = id; setOverId(id); }
+      return;
+    }
+    if (id === dragId) return;            /* 끄는 대로 바로 옮깁니다 */
+    const from = idx(dragId), to = idx(id);
     if (from < 0 || to < 0) return;
-    const next = arr.slice();
+    const next = itemsRef.current.slice();
     const [m] = next.splice(from, 1);
     next.splice(to, 0, m);
     onReorder(next);
   };
+
   const up = (e) => {
     if (!dragId) return;
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (err) {}
-    setDragId(null);
+    if (deferred && overRef.current && overRef.current !== dragId) {
+      const from = idx(dragId), to = idx(overRef.current);
+      if (from >= 0 && to >= 0) {
+        const next = itemsRef.current.slice();
+        const [m] = next.splice(from, 1);
+        next.splice(to, 0, m);
+        onReorder(next);
+      }
+    }
+    setDragId(null); setOverId(null); overRef.current = null;
   };
+
+  const dragging = dragId != null;
+  const fromIdx = dragging ? idx(dragId) : -1;
 
   return (
     <div ref={listRef} className={className} style={style}>
       {items.map((it) => {
-        const id = idOf(it), on = dragId === id;
+        const id = idOf(it);
+        const on = dragId === id;
+        /* 놓일 자리를 옅은 회색 선으로만 알려 줍니다 */
+        const mark = deferred && dragging && overId === id && !on;
+        const below = mark && idx(id) > fromIdx;
+        const line = "2px solid #C2C8C0";
         return (
           <div key={id} data-sortid={id}
             style={{
-              borderRadius: 14,
-              opacity: on ? 0.5 : 1,
-              /* 놓일 자리를 굵은 선으로 알려 줍니다 */
-              borderTop: on ? "3px solid " + C.navy : "3px solid transparent",
-              borderBottom: on ? "3px solid " + C.navy : "3px solid transparent",
-              background: on ? "rgba(36,72,107,0.05)" : "transparent",
-              transition: "opacity .12s ease, background .12s ease",
+              opacity: on ? 0.4 : 1,
+              borderTop: deferred ? (mark && !below ? line : "2px solid transparent")
+                : (on ? line : "2px solid transparent"),
+              borderBottom: deferred ? (mark && below ? line : "2px solid transparent")
+                : (on ? line : "2px solid transparent"),
+              transition: "opacity .12s ease",
               position: "relative", zIndex: on ? 5 : 1,
             }}>
             {renderRow(it, { onPointerDown: (e) => down(e, id), onPointerMove: move, onPointerUp: up, onPointerCancel: up, style: { touchAction: "none", cursor: on ? "grabbing" : "grab" } }, on)}
@@ -604,6 +656,9 @@ const PathTag = ({ r, onClick }) => (
 ------------------------------------------------------------------- */
 function TodoRow({ todo, handle, onToggle, onPatch, onDelete, pathNode }) {
   const [editing, setEditing] = useState(false);
+  const [typing, setTyping] = useState(false);
+  const [draft, setDraft] = useState(todo.text);
+  const ref = useRef(null);
   return (
     <div style={{ padding: "10px 2px" }}>
       <div className="flex items-start gap-2">
@@ -615,7 +670,38 @@ function TodoRow({ todo, handle, onToggle, onPatch, onDelete, pathNode }) {
         </button>
         <div className="flex-1 min-w-0">
           {pathNode}
-          <div style={{ fontSize: 14.5, lineHeight: 1.45, color: todo.done ? C.faint : C.ink, textDecoration: todo.done ? "line-through" : "none", wordBreak: "break-word" }}>{todo.text}</div>
+          {typing ? (
+            <textarea ref={ref} value={draft} autoFocus rows={Math.max(1, draft.split("\n").length)}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") { setDraft(todo.text); setTyping(false); return; }
+                if (e.key !== "Enter") return;
+                if (e.altKey) {                        /* Alt+Enter — 줄 추가 */
+                  e.preventDefault();
+                  const el = ref.current, a = el.selectionStart, b = el.selectionEnd;
+                  const next = draft.slice(0, a) + "\n" + draft.slice(b);
+                  setDraft(next);
+                  requestAnimationFrame(() => {
+                    if (ref.current) ref.current.selectionStart = ref.current.selectionEnd = a + 1;
+                  });
+                  return;
+                }
+                e.preventDefault();
+                const t = draft.replace(/\s+$/, "");
+                if (t && t !== todo.text) onPatch({ text: t });
+                setTyping(false);
+              }}
+              onBlur={() => { const t = draft.replace(/\s+$/, ""); if (t && t !== todo.text) onPatch({ text: t }); setTyping(false); }}
+              className="w-full rounded-lg"
+              style={{ padding: "6px 8px", fontSize: 14.5, lineHeight: 1.45, color: C.ink, background: "#F7F8F6",
+                border: "1px solid " + C.rule, outline: "none", resize: "none", fontFamily: FONT }} />
+          ) : (
+            <div {...editTrigger(() => { setDraft(todo.text); setTyping(true); })}
+              title="더블클릭하면 수정됩니다"
+              style={{ fontSize: 14.5, lineHeight: 1.45, color: todo.done ? C.faint : C.ink,
+                textDecoration: todo.done ? "line-through" : "none", wordBreak: "break-word",
+                whiteSpace: "pre-wrap", cursor: "text" }}>{todo.text}</div>
+          )}
           <div className="mt-1.5"><DueChip item={todo} onClick={() => setEditing(!editing)} /></div>
           {editing && <DueEditor value={todo} onChange={onPatch} onClose={() => setEditing(false)} />}
         </div>
@@ -699,59 +785,6 @@ const DocPanel = ({ sub, onToggleDoc, onSetDocMode }) => {
     </Card>
   );
 };
-
-/* ------------------------------------------------------------------
-   메모 → 사업 보내기
-------------------------------------------------------------------- */
-function MoveSheet({ data, memo, onClose, onMove }) {
-  const dismiss = useDismiss(onClose);
-  const [due, setDue] = useState({ due: memo.due || "", dueTime: memo.dueTime || "", dueEnd: memo.dueEnd || "" });
-  const [editing, setEditing] = useState(false);
-  return (
-    <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade" style={{ background: "rgba(26,33,30,0.4)", zIndex: 60 }} {...dismiss}>
-      <div className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
-        style={{ maxWidth: 560, background: C.bg, maxHeight: "85vh", overflowY: "auto", border: "1px solid " + C.rule }}>
-        <div className="sticky top-0 flex items-start justify-between" style={{ background: C.bg, padding: "16px 18px 12px", borderBottom: "1px solid " + C.rule, zIndex: 2 }}>
-          <div className="min-w-0">
-            <Label>사업으로 보내기</Label>
-            <div style={{ fontSize: 15, fontWeight: 700, marginTop: 3 }} className="truncate">{memo.text}</div>
-          </div>
-          <button onClick={onClose} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}><X size={20} /></button>
-        </div>
-        <div style={{ padding: 18 }}>
-          <Card style={{ padding: 12, marginBottom: 16 }}>
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="flex items-center gap-2 min-w-0"><Label>마감</Label><DueChip item={due} onClick={() => setEditing(!editing)} /></div>
-              {memo.due && !editing && <Chip tone="green">메모에서 그대로</Chip>}
-            </div>
-            {editing && <DueEditor value={due} onChange={setDue} onClose={() => setEditing(false)} />}
-          </Card>
-          <div className="flex flex-col gap-3">
-            {data.projects.map((p, i) => (
-              <div key={p.id}>
-                <div className="flex items-center gap-2 mb-1.5">
-                  <Dot color={colorOf(p, i)} />
-                  <span style={{ fontSize: 13.5, fontWeight: 750 }}>{p.name}</span>
-                </div>
-                {p.subs.length === 0 ? <div style={{ fontSize: 12.5, color: C.faint, paddingLeft: 18 }}>세부사업이 없습니다</div> : (
-                  <div className="flex flex-col gap-1.5">
-                    {p.subs.map((s) => (
-                      <button key={s.id} onClick={() => onMove(p.id, s.id, due)} className="wb-btn flex items-center justify-between rounded-xl w-full"
-                        style={{ padding: "11px 13px", background: C.surface, border: "1px solid " + C.rule, cursor: "pointer", textAlign: "left" }}>
-                        <span style={{ fontSize: 14, fontWeight: 600 }}>{s.name}</span>
-                        <Send size={15} color={colorOf(p, i)} strokeWidth={2.3} />
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 /* ------------------------------------------------------------------
    메인보드
@@ -857,7 +890,7 @@ function HomeView({ data, rows, onDone, onOpenSub, onOpenProject, onGo, onAddMem
         <Stat n={today.length} t="오늘" tone="amber" onClick={() => onGo("due")} />
         <Stat n={week.length} t="7일 내" tone="navy" onClick={() => onGo("due")} />
         <Stat n={totalDocLeft} t="서류" tone="seal" onClick={() => onGo("projects")} />
-        <Stat n={data.memos.length} t="할일" tone="navy" onClick={() => onGo("memos")} />
+        <Stat n={data.memos.length} t="적어둠" tone="navy" onClick={() => onGo("projects")} />
       </div>
 
       <Card style={{ padding: "14px 15px" }}>
@@ -993,7 +1026,7 @@ function HomeView({ data, rows, onDone, onOpenSub, onOpenProject, onGo, onAddMem
       </Card>
 
       <Card style={{ padding: 13 }}>
-        <div className="flex items-center gap-2 mb-2"><Inbox size={14} color={C.navy} strokeWidth={2.3} /><Label>할 일 바로 담기</Label></div>
+        <div className="flex items-center gap-2 mb-2"><Inbox size={14} color={C.navy} strokeWidth={2.3} /><Label>생각나는 대로 담기</Label></div>
         <AddLine placeholder="잊기 전에 적어 두세요" onAdd={onAddMemo} />
       </Card>
     </div>
@@ -1011,10 +1044,9 @@ export default function WorkBoard() {
   const [syncState, setSyncState] = useState("off");   // off | syncing | ok | error
   const [syncMsg, setSyncMsg] = useState("");
   const [lastBackup, setLastBackup] = useState(() => Number(localStorage.getItem(BACKUP_KEY) || 0));
-  const [tab, setTab] = useState(() => lastView().tab || "home");
+  const [tab, setTab] = useState(() => (["home", "projects", "due", "notes"].includes(lastView().tab) ? lastView().tab : "home"));
   const [openProject, setOpenProject] = useState(() => lastView().pid || null);
   const [openSub, setOpenSub] = useState(() => lastView().sid || null);
-  const [moving, setMoving] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [toast, setToast] = useState(null);
   const saveTimer = useRef(null);
@@ -1247,13 +1279,6 @@ export default function WorkBoard() {
     flash(msg, () => setData((d) => { const arr = d.memos.slice(); arr.splice(Math.min(idx, arr.length), 0, m); return { ...d, memos: arr }; }));
   };
 
-  const moveMemo = (memo, pid, sid, due) => {
-    addTodo(pid, sid, memo.text, due.due, due.dueTime, due.dueEnd);
-    setData((d) => ({ ...d, memos: d.memos.filter((x) => x.id !== memo.id) }));
-    setMoving(null);
-    const s = data.projects.find((x) => x.id === pid)?.subs.find((x) => x.id === sid);
-    flash(`‘${s?.name}’으로 보냈습니다`);
-  };
 
   const projectIdx = data.projects.findIndex((p) => p.id === openProject);
   const project = projectIdx >= 0 ? data.projects[projectIdx] : null;
@@ -1293,7 +1318,7 @@ export default function WorkBoard() {
     : sub ? { title: sub.name, sup: project.name, back: () => setOpenSub(null), color: colorOf(project, projectIdx) }
     : project ? { title: project.name, sup: "사업", back: () => setOpenProject(null), color: colorOf(project, projectIdx) } : null;
 
-  const titleOf = { home: "메인보드", projects: "사업 관리", due: "마감", memos: "할일", notes: "메모함" }[tab];
+  const titleOf = { home: "메인보드", projects: "사업 관리", due: "마감", notes: "메모함" }[tab] || "메인보드";
 
   return (
     <div style={{ fontFamily: FONT, background: C.bg, minHeight: "100vh", color: C.ink }}>
@@ -1400,7 +1425,7 @@ export default function WorkBoard() {
             <HomeView data={data} rows={homeRows} onDone={doneRow} onOpenSub={openSubPage}
               onOpenProject={(pid) => { setTab("projects"); setOpenProject(pid); setOpenSub(null); }}
               onGo={(t) => { setTab(t); if (t === "projects") { setOpenProject(null); setOpenSub(null); } }}
-              onAddMemo={(t) => { addMemo(t); flash("할일에 담았습니다"); }} />
+              onAddMemo={(t) => { addMemo(t); flash("사업 화면에 담았습니다"); }} />
           )}
 
           {tab === "projects" && !project && (
@@ -1423,6 +1448,23 @@ export default function WorkBoard() {
                 return { ...s2, todos: next };
               })}
               onAssign={assignTodo}
+              onMoveTodoTo={(fromPid, fromSid, tid, toPid, toSid) => {
+                let item = null;
+                setProjects((ps) => ps.map((pr) => {
+                  if (pr.id !== fromPid) return pr;
+                  return { ...pr, subs: pr.subs.map((s2) => {
+                    if (s2.id !== fromSid) return s2;
+                    const f = s2.todos.find((t) => t.id === tid);
+                    if (f) item = f;
+                    return { ...s2, todos: s2.todos.filter((t) => t.id !== tid) };
+                  }) };
+                }));
+                setProjects((ps) => ps.map((pr) => {
+                  if (pr.id !== toPid || !item) return pr;
+                  return { ...pr, subs: pr.subs.map((s2) => (s2.id === toSid ? { ...s2, todos: [...s2.todos, item] } : s2)) };
+                }));
+                flash("다른 사업으로 옮겼습니다");
+              }}
               onCreateSub={createSub}
               topOrder={data.topOrder || []}
               onTopOrder={(ids) => setData((d) => ({ ...d, topOrder: ids }))}
@@ -1431,6 +1473,27 @@ export default function WorkBoard() {
               onToggleMemo={(m) => removeMemo(m, "처리했습니다")}
               onEditMemo={(id, text) => setData((d) => ({ ...d, memos: d.memos.map((x) => (x.id === id ? { ...x, text } : x)) }))}
               onReorderMemos={(next) => setData((d) => ({ ...d, memos: next }))}
+              onSetMemoDue={(id, patch) => setData((d) => ({ ...d, memos: d.memos.map((x) => (x.id === id ? { ...x, ...patch } : x)) }))}
+              onAddMemoAfter={(id) => {
+                const nid = uid();
+                setData((d) => {
+                  const arr = d.memos.slice();
+                  const i = arr.findIndex((x) => x.id === id);
+                  arr.splice(i + 1, 0, { id: nid, text: "", due: "", dueTime: "", dueEnd: "", createdAt: Date.now() });
+                  return { ...d, memos: arr };
+                });
+                return nid;
+              }}
+              onAddTodoAfter={(pid, sid, tid) => {
+                const nid = uid();
+                mapSub(pid, sid, (s2) => {
+                  const arr = s2.todos.slice();
+                  const i = arr.findIndex((t) => t.id === tid);
+                  arr.splice(i + 1, 0, { id: nid, text: "", due: "", dueTime: "", dueEnd: "", done: false, createdAt: Date.now() });
+                  return { ...s2, todos: arr };
+                });
+                return nid;
+              }}
               onMoveMemo={(id, dir) => setData((d) => {
                 const arr = d.memos.slice();
                 const i = arr.findIndex((x) => x.id === id), j = i + dir;
@@ -1483,13 +1546,6 @@ export default function WorkBoard() {
               onOpenProject={(pid) => { setTab("projects"); setOpenProject(pid); setOpenSub(null); }} />
           )}
 
-          {tab === "memos" && (
-            <MemoView memos={data.memos} onAdd={addMemo}
-              onDone={(m) => removeMemo(m, "바로 처리했습니다")} onDelete={(m) => removeMemo(m, "메모를 버렸습니다")}
-              onPatch={(id, patch) => setData((d) => ({ ...d, memos: d.memos.map((m) => (m.id === id ? { ...m, ...patch } : m)) }))}
-              onReorder={(next) => setData((d) => ({ ...d, memos: next }))}
-              onMove={setMoving} hasProject={data.projects.length > 0} />
-          )}
         </div>
       </div>
 
@@ -1498,7 +1554,6 @@ export default function WorkBoard() {
           {[{ k: "home", t: "메인", i: LayoutGrid, badge: 0 },
             { k: "projects", t: "사업", i: FolderClosed, badge: 0 },
             { k: "due", t: "마감", i: CalendarDays, badge: overdue },
-            { k: "memos", t: "할일", i: Inbox, badge: data.memos.length },
             { k: "notes", t: "메모함", i: StickyNote, badge: 0 }].map((x) => {
             const on = tab === x.k;
             return (
@@ -1519,7 +1574,6 @@ export default function WorkBoard() {
         </div>
       </div>
 
-      {moving && <MoveSheet data={data} memo={moving} onClose={() => setMoving(null)} onMove={(pid, sid, due) => moveMemo(moving, pid, sid, due)} />}
       {showSettings && (
         <Settings
           data={data} onClose={() => setShowSettings(false)} flash={flash}
@@ -1564,21 +1618,47 @@ export default function WorkBoard() {
 const STARTER = ["집중심리클리닉", "특별교육", "수강명령", "기타"];
 
 /* 한 줄짜리 할 일 — 눌러서 수정, Ctrl+↑↓ 로 이동 */
-function MiniTodo({ todo, no, tag, right, onToggle, onEdit, onMove, dense }) {
-  const [editing, setEditing] = useState(false);
+function MiniTodo({ todo, no, tag, right, onToggle, onEdit, onMove, onAddAfter, onRemoveEmpty, dense, autoEdit }) {
+  const [editing, setEditing] = useState(!!autoEdit);
   const [draft, setDraft] = useState(todo.text);
-  const commit = () => { const t = draft.trim(); if (t && t !== todo.text) onEdit(t); };
+  const ref = useRef(null);
+
+  const commit = () => {
+    const t = draft.replace(/\s+$/, "");
+    if (!t.trim()) { if (!todo.text && onRemoveEmpty) onRemoveEmpty(); return ""; }
+    if (t !== todo.text) onEdit(t);
+    return t;
+  };
+
   const key = (e) => {
     const mod = e.ctrlKey || e.metaKey;
+
     if (mod && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
       e.preventDefault(); commit(); onMove && onMove(e.key === "ArrowUp" ? -1 : 1); return;
     }
-    if (e.key === "Enter") {
-      if (e.altKey) return;                    /* Alt+Enter — 줄 바꿈 */
-      e.preventDefault(); commit(); setEditing(false); return;
+    if (e.key !== "Enter") {
+      if (e.key === "Escape") { setDraft(todo.text); setEditing(false); }
+      return;
     }
-    if (e.key === "Escape") { setDraft(todo.text); setEditing(false); }
+    e.preventDefault();
+
+    if (e.altKey) {                              /* Alt+Enter — 같은 할 일에 줄 추가 */
+      const el = ref.current;
+      if (!el) return;
+      const a = el.selectionStart, b = el.selectionEnd;
+      const next = draft.slice(0, a) + "\n" + draft.slice(b);
+      setDraft(next);
+      requestAnimationFrame(() => {
+        if (ref.current) ref.current.selectionStart = ref.current.selectionEnd = a + 1;
+      });
+      return;
+    }
+
+    commit();
+    setEditing(false);
+    if (mod && onAddAfter) onAddAfter();         /* Ctrl+Enter — 바로 아래 새 칸 */
   };
+
   return (
     <div className="flex items-start gap-1.5" style={{ padding: dense ? "2.5px 0" : "4px 0" }}>
       <button onClick={onToggle} className="wb-btn flex items-center justify-center rounded shrink-0"
@@ -1589,7 +1669,7 @@ function MiniTodo({ todo, no, tag, right, onToggle, onEdit, onMove, dense }) {
           minWidth: 13, marginTop: 1, fontVariantNumeric: "tabular-nums", textAlign: "right" }}>{no}</span>
       )}
       {editing ? (
-        <textarea value={draft} autoFocus rows={Math.max(1, draft.split("\n").length)}
+        <textarea ref={ref} value={draft} autoFocus rows={Math.max(1, draft.split("\n").length)}
           onChange={(e) => setDraft(e.target.value)} onKeyDown={key}
           onBlur={() => { commit(); setEditing(false); }} className="flex-1 rounded"
           style={{ padding: "2px 5px", fontSize: dense ? 12.5 : 13.5, border: "1px solid " + C.rule,
@@ -1608,6 +1688,45 @@ function MiniTodo({ todo, no, tag, right, onToggle, onEdit, onMove, dense }) {
     </div>
   );
 }
+
+/* 시간 · 오늘/내일/다음 을 작게 붙입니다 */
+const TimeTag = ({ item }) => {
+  const t = timeText(item);
+  if (!t) return null;
+  return (
+    <span className="shrink-0" style={{ fontSize: 9.5, fontWeight: 700, color: C.muted,
+      marginTop: 2, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+      {t}
+    </span>
+  );
+};
+
+const BucketTag = ({ item }) => {
+  const b = BUCKETS[bucketOf(item)];
+  return (
+    <span className="shrink-0 rounded" style={{ background: b.bg, color: b.fg, fontSize: 9.5,
+      fontWeight: 750, padding: "1.5px 5px", marginTop: 1, whiteSpace: "nowrap" }}>
+      {b.t}
+    </span>
+  );
+};
+
+/* 오늘 / 내일 / 다음 을 바로 고르는 단추 */
+const BucketPick = ({ item, onPick }) => (
+  <span className="inline-flex items-center shrink-0 rounded" style={{ background: "#F4F6F3", padding: 1, gap: 1, marginTop: 1 }}>
+    {BUCKETS.map((b) => {
+      const on = bucketOf(item) === b.k;
+      return (
+        <button key={b.k} onClick={() => onPick(setBucket(b.k))} title={b.t}
+          className="wb-btn rounded"
+          style={{ fontSize: 9.5, fontWeight: 750, padding: "1px 5px", cursor: "pointer", border: "none",
+            background: on ? b.bg : "transparent", color: on ? b.fg : "#AEB5AC" }}>
+          {b.t}
+        </button>
+      );
+    })}
+  </span>
+);
 
 /* 폴더에 떨어뜨렸을 때 뜨는 작은 선택창 */
 function AssignSheet({ project, base, title, onPick, onClose }) {
@@ -1658,7 +1777,7 @@ function AssignSheet({ project, base, title, onPick, onClose }) {
   );
 }
 
-function QuickAdd({ onAdd, placeholder, multiline }) {
+function QuickAdd({ onAdd, placeholder }) {
   const [v, setV] = useState("");
   const ref = useRef(null);
   const vRef = useRef("");        /* 화면 갱신을 기다리지 않고 바로 비우기 위한 값 */
@@ -1680,7 +1799,7 @@ function QuickAdd({ onAdd, placeholder, multiline }) {
 
     if (e.altKey) {                              /* Alt+Enter — 같은 할 일에 줄 추가 */
       const el = ref.current;
-      if (!el || !multiline) return;
+      if (!el) return;
       const a = el.selectionStart, b = el.selectionEnd;
       const next = vRef.current.slice(0, a) + "\n" + vRef.current.slice(b);
       write(next);
@@ -1699,16 +1818,6 @@ function QuickAdd({ onAdd, placeholder, multiline }) {
     }
   };
 
-  const paste = (e) => {
-    const text = (e.clipboardData || window.clipboardData).getData("text");
-    if (!/\r?\n/.test(text)) return;
-    e.preventDefault();
-    const items = splitList(text);
-    if (!items.length) return;
-    write("");
-    items.forEach((t) => onAdd(t));
-  };
-
   const style = {
     padding: "2px 4px", fontSize: 12, color: C.ink, background: "transparent",
     border: "none", outline: "none", minWidth: 0, resize: "none",
@@ -1718,15 +1827,9 @@ function QuickAdd({ onAdd, placeholder, multiline }) {
   return (
     <div className="flex items-start gap-1" style={{ marginTop: 5 }}>
       <Plus size={12} color={C.faint} strokeWidth={2.6} className="shrink-0" style={{ marginTop: 3 }} />
-      {multiline ? (
-        <textarea ref={ref} value={v} rows={Math.max(1, v.split("\n").length)}
-          onChange={(e) => write(e.target.value)} onKeyDown={key} onBlur={flush} onPaste={paste}
-          placeholder={placeholder} className="flex-1 rounded" style={style} />
-      ) : (
-        <input ref={ref} value={v}
-          onChange={(e) => write(e.target.value)} onKeyDown={key} onBlur={flush} onPaste={paste}
-          placeholder={placeholder} className="flex-1 rounded" style={style} />
-      )}
+      <textarea ref={ref} value={v} rows={Math.max(1, v.split("\n").length)}
+        onChange={(e) => write(e.target.value)} onKeyDown={key} onBlur={flush}
+        placeholder={placeholder} className="flex-1 rounded" style={style} />
     </div>
   );
 }
@@ -1734,11 +1837,12 @@ function QuickAdd({ onAdd, placeholder, multiline }) {
 function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoDue, onSeed,
                        onQuickTodo, onToggleTodo, onEditTodo, onMoveTodo,
                        onAssign, onCreateSub, topOrder, onTopOrder,
-                       memos, onAddMemo, onDropMemo, onToggleMemo, onEditMemo, onMoveMemo, onReorderMemos }) {
+                       memos, onAddMemo, onAddMemoAfter, onDropMemo, onToggleMemo, onEditMemo, onMoveMemo, onReorderMemos, onAddTodoAfter, onSetMemoDue, onMoveTodoTo }) {
   const [adding, setAdding] = useState(false);
   const [assign, setAssign] = useState(null);   /* {pid, kind, ...} */
   const [over, setOver] = useState(null);
   const dragRef = useRef("");
+  const [focusId, setFocusId] = useState(null);
   const missing = STARTER.filter((n) => !data.projects.some((p) => p.name === n));
 
   /* 사업 안의 할 일을 보관함 → 세부사업 순으로 */
@@ -1755,7 +1859,8 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
   const all = [];
   data.projects.forEach((p, i) => rowsOf(p, i).forEach((r) => all.push({ ...r, pid: p.id, pName: p.name, pColor: colorOf(p, i) })));
   const rank = new Map((topOrder || []).map((id, i) => [id, i]));
-  all.sort((a, b) => (rank.has(a.id) ? rank.get(a.id) : 1e9) - (rank.has(b.id) ? rank.get(b.id) : 1e9));
+  const pos = (x) => (rank.has(x.id) ? rank.get(x.id) : 1e9);
+  all.sort((a, b) => bucketOf(a) - bucketOf(b) || pos(a) - pos(b) || sortKey(a).localeCompare(sortKey(b)));
 
   const moveTop = (id, dir) => {
     const ids = all.map((x) => x.id);
@@ -1801,15 +1906,22 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
                   <GripVertical size={11} strokeWidth={2} />
                 </button>
                 <div className="flex-1 min-w-0">
-                  <MiniTodo todo={r} no={all.findIndex((x) => x.id === r.id) + 1} dense
+                  <MiniTodo todo={r} no={all.findIndex((x) => x.id === r.id) + 1} dense autoEdit={focusId === r.id}
                     onToggle={() => onToggleTodo(r.pid, r.sid, r.id)}
                     onEdit={(t) => onEditTodo(r.pid, r.sid, r.id, t)}
                     onMove={(d) => moveTop(r.id, d)}
+                    onAddAfter={() => setFocusId(onAddTodoAfter(r.pid, r.sid, r.id))}
+                    onRemoveEmpty={() => onToggleTodo(r.pid, r.sid, r.id)}
                     tag={
-                      <span className="shrink-0 inline-flex items-center gap-1 rounded" style={{ marginTop: 1,
-                        background: r.hl || "#F1F3F0", padding: "1px 5px", fontSize: 9.5, fontWeight: 750, color: C.muted, maxWidth: 110 }}>
-                        <Dot color={r.pColor} size={5} />
-                        <span className="truncate">{r.pName}</span>
+                      <span className="shrink-0 inline-flex items-center gap-1">
+                        <TimeTag item={r} />
+                        <BucketTag item={r} />
+                        <span className="inline-flex items-center gap-1 rounded" style={{
+                          background: r.hl || "#F1F3F0", padding: "1.5px 5px", fontSize: 9.5,
+                          fontWeight: 750, color: C.muted, maxWidth: 96 }}>
+                          <Dot color={r.pColor} size={5} />
+                          <span className="truncate">{r.pName}</span>
+                        </span>
                       </span>
                     } />
                 </div>
@@ -1841,8 +1953,15 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
               onDragLeave={() => setOver((x) => (x === p.id ? null : x))}
               onDrop={(e) => {
                 e.preventDefault(); setOver(null);
-                const mid = e.dataTransfer.getData("text/memo") || e.dataTransfer.getData("text/plain") || dragRef.current;
-                if (mid && memos.some((m) => m.id === mid)) setAssign({ pid: p.id, kind: "memo", mid });
+                const raw = dragRef.current || "";
+                const todoKey = e.dataTransfer.getData("text/todo") || (raw.startsWith("todo:") ? raw.slice(5) : "");
+                if (todoKey) {
+                  const [fp, fs, ft] = todoKey.split(":");
+                  if (fp !== p.id) setAssign({ pid: p.id, kind: "move", fromPid: fp, fromSid: fs, tid: ft });
+                } else {
+                  const mid = e.dataTransfer.getData("text/memo") || raw;
+                  if (mid && memos.some((m) => m.id === mid)) setAssign({ pid: p.id, kind: "memo", mid });
+                }
                 dragRef.current = "";
               }}
               style={{ background: isOver ? "#EEF3EE" : C.surface,
@@ -1887,10 +2006,22 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
               {rows.length === 0 ? (
                 <div style={{ fontSize: 11, color: C.faint, padding: "2px 0" }}>할 일 없음</div>
               ) : rows.slice(0, 10).map((r) => (
-                <MiniTodo key={r.id} todo={r} dense
+                <div key={r.id} draggable
+                  onDragStart={(e) => {
+                    dragRef.current = "todo:" + p.id + ":" + r.sid + ":" + r.id;
+                    try {
+                      e.dataTransfer.setData("text/todo", p.id + ":" + r.sid + ":" + r.id);
+                      e.dataTransfer.setData("text/plain", r.text);
+                    } catch (err) {}
+                    e.dataTransfer.effectAllowed = "move";
+                  }}
+                  onDragEnd={() => { dragRef.current = ""; setOver(null); }}>
+                <MiniTodo todo={r} dense autoEdit={focusId === r.id}
                   onToggle={() => onToggleTodo(p.id, r.sid, r.id)}
                   onEdit={(t) => onEditTodo(p.id, r.sid, r.id, t)}
                   onMove={(d) => onMoveTodo(p.id, r.sid, r.id, d)}
+                  onAddAfter={() => setFocusId(onAddTodoAfter(p.id, r.sid, r.id))}
+                  onRemoveEmpty={() => onToggleTodo(p.id, r.sid, r.id)}
                   right={r.inbox ? (
                     <button onClick={() => setAssign({ pid: p.id, kind: "todo", sid: r.sid, tid: r.id, text: r.text })}
                       className="wb-btn shrink-0 flex items-center justify-center rounded"
@@ -1904,6 +2035,7 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
                       style={{ width: 11, height: 11, marginTop: 4, background: r.hl,
                         border: "1.5px solid " + r.edge, cursor: "pointer", padding: 0 }} />
                   )} />
+                </div>
               ))}
               {rows.length > 10 && (
                 <button onClick={() => onOpen(p.id)} className="wb-btn"
@@ -1938,7 +2070,7 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
             <span style={{ fontSize: 10, color: C.faint, marginLeft: "auto" }}>점 6개로 순서 · 폴더로 끌어다 놓기</span>
           )}
         </div>
-        <Sortable items={memos} idOf={(m) => m.id} onReorder={onReorderMemos}
+        <Sortable items={memos} idOf={(m) => m.id} onReorder={onReorderMemos} deferred
           renderRow={(m, handle) => (
             <div draggable
               onDragStart={(e) => {
@@ -1957,24 +2089,30 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
                 <GripVertical size={12} strokeWidth={2} />
               </button>
               <div className="flex-1 min-w-0">
-                <MiniTodo todo={m} dense
+                <MiniTodo todo={m} dense autoEdit={focusId === m.id}
                   onToggle={() => onToggleMemo(m)}
                   onEdit={(t) => onEditMemo(m.id, t)}
                   onMove={(d) => onMoveMemo(m.id, d)}
+                  onAddAfter={() => setFocusId(onAddMemoAfter(m.id))}
+                  onRemoveEmpty={() => onToggleMemo(m)}
                   right={
-                    <select value="" title="사업으로 보내기"
-                      onChange={(e) => e.target.value && setAssign({ pid: e.target.value, kind: "memo", mid: m.id })}
-                      className="shrink-0 rounded"
-                      style={{ fontSize: 10, color: C.muted, background: "#F1F3F0", border: "none",
-                        padding: "1px 3px", marginTop: 2, cursor: "pointer" }}>
-                      <option value="">→</option>
-                      {data.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </select>
+                    <span className="shrink-0 inline-flex items-center gap-1">
+                      <TimeTag item={m} />
+                      <BucketPick item={m} onPick={(patch) => onSetMemoDue(m.id, patch)} />
+                      <select value="" title="사업으로 보내기"
+                        onChange={(e) => e.target.value && setAssign({ pid: e.target.value, kind: "memo", mid: m.id })}
+                        className="rounded"
+                        style={{ fontSize: 10, color: C.muted, background: "#F1F3F0", border: "none",
+                          padding: "1px 3px", marginTop: 1, cursor: "pointer" }}>
+                        <option value="">→</option>
+                        {data.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    </span>
                   } />
               </div>
             </div>
           )} />
-        <QuickAdd placeholder="여기에 적어 두세요" onAdd={onAddMemo} multiline />
+        <QuickAdd placeholder="여기에 적어 두세요" onAdd={onAddMemo} />
       </Card>
 
       {assign && (() => {
@@ -1983,6 +2121,7 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
         const finish = (sid, newName) => {
           const target = sid || onCreateSub(p.id, newName);
           if (assign.kind === "memo") onDropMemo(assign.mid, p.id, target);
+          else if (assign.kind === "move") onMoveTodoTo(assign.fromPid, assign.fromSid, assign.tid, p.id, target);
           else onAssign(p.id, assign.sid, assign.tid, target);
           setAssign(null);
         };
@@ -2626,279 +2765,6 @@ function NotesView({ notes, projects, onAdd, onPatch, onDelete, onReorder, onOpe
           onClose={() => setOpenId(null)}
           onDelete={() => { setOpenId(null); onDelete(open); }}
           onDuplicate={() => { onAdd(open.text, open.pid, { html: open.html, mode: open.mode, items: open.items, color: open.color }); setOpenId(null); }} />
-      )}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------
-   할일 — 번호가 매겨지고, 하위 목록을 둘 수 있습니다
-------------------------------------------------------------------- */
-function SubItem({ item, handle, onToggle, onEdit, onDelete, onAddAfter, onMove, autoEdit }) {
-  const [editing, setEditing] = useState(!!autoEdit);
-  const [draft, setDraft] = useState(item.text);
-
-  const commit = () => {
-    const t = draft.trim();
-    if (t && t !== item.text) onEdit(t);
-    if (!t) onDelete();
-    return t;
-  };
-  const key = (e) => {
-    const mod = e.ctrlKey || e.metaKey;
-    if (mod && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-      e.preventDefault();
-      commit();
-      onMove(e.key === "ArrowUp" ? -1 : 1);
-      return;
-    }
-    if (e.key === "Enter") {
-      e.preventDefault();
-      const t = commit();
-      if (mod && t) onAddAfter();   /* Ctrl+Enter — 아래에 새 항목 */
-      else setEditing(false);       /* Enter — 그냥 빠져나감 */
-      return;
-    }
-    if (e.key === "Escape") { setDraft(item.text); setEditing(false); }
-  };
-
-  return (
-    <div className="flex items-start gap-1.5" style={{ padding: "4px 0" }}>
-      {handle && (
-        <button {...handle} className="wb-btn shrink-0 flex items-center justify-center"
-          style={{ ...handle.style, background: "none", border: "none", color: "#C9CFC7", padding: 0, width: 14, marginTop: 3 }}
-          aria-label="하위 순서 바꾸기">
-          <GripVertical size={13} strokeWidth={2} />
-        </button>
-      )}
-      <button onClick={onToggle} className="wb-btn flex items-center justify-center rounded shrink-0"
-        style={{ width: 17, height: 17, marginTop: 2, border: `1.6px solid ${item.done ? C.green : "#C6CCC5"}`,
-          background: item.done ? C.green : "transparent", color: "#fff", cursor: "pointer" }}>
-        {item.done && <Check size={11} strokeWidth={3.6} />}
-      </button>
-      {editing ? (
-        <input value={draft} autoFocus onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={key} onBlur={() => { commit(); setEditing(false); }}
-          className="flex-1 rounded-md"
-          style={{ padding: "3px 7px", fontSize: 13.5, border: "1px solid " + C.rule, background: "#F7F8F6", outline: "none", color: C.ink, minWidth: 0 }} />
-      ) : (
-        <div onClick={() => { setDraft(item.text); setEditing(true); }} className="flex-1 min-w-0"
-          style={{ fontSize: 13.5, lineHeight: 1.5, cursor: "text", wordBreak: "break-word",
-            color: item.done ? C.faint : C.muted, textDecoration: item.done ? "line-through" : "none" }}>
-          {item.text}
-        </div>
-      )}
-      <button onClick={onDelete} className="wb-btn shrink-0"
-        style={{ background: "none", border: "none", color: "#C6CCC5", cursor: "pointer", padding: "0 2px", marginTop: 1 }}>
-        <X size={13} strokeWidth={2.4} />
-      </button>
-    </div>
-  );
-}
-
-function SubChecklist({ subs, onChange, hint = true }) {
-  const [adding, setAdding] = useState(false);
-  const [v, setV] = useState("");
-  const [focusId, setFocusId] = useState(null);
-  const list = subs || [];
-  const done = list.filter((x) => x.done).length;
-
-  const replace = (id, patch) => onChange(list.map((x) => (x.id === id ? { ...x, ...patch } : x)));
-  const move = (id, dir) => {
-    const i = list.findIndex((x) => x.id === id);
-    const j = i + dir;
-    if (i < 0 || j < 0 || j >= list.length) return;
-    const next = list.slice();
-    [next[i], next[j]] = [next[j], next[i]];
-    onChange(next);
-  };
-  const addAfter = (id) => {
-    const i = list.findIndex((x) => x.id === id);
-    const item = { id: uid(), text: "", done: false };
-    const next = list.slice();
-    next.splice(i + 1, 0, item);
-    onChange(next);
-    setFocusId(item.id);
-  };
-  const addAtEnd = (keepOpen) => {
-    const t = v.trim();
-    if (!t) { setAdding(false); return; }
-    onChange([...list, { id: uid(), text: t, done: false }]);
-    setV("");
-    setAdding(!!keepOpen);
-  };
-
-  return (
-    <div style={{ marginTop: 8, paddingLeft: 2 }}>
-      {list.length > 0 && (
-        <div className="flex items-center gap-1.5 mb-1">
-          <Label>하위 목록</Label>
-          <span style={{ fontSize: 11, color: C.faint, fontWeight: 700 }}>{done}/{list.length}</span>
-        </div>
-      )}
-
-      <Sortable items={list} idOf={(x) => x.id} onReorder={onChange}
-        renderRow={(it, handle) => (
-          <SubItem item={it} handle={handle} autoEdit={focusId === it.id}
-            onToggle={() => replace(it.id, { done: !it.done })}
-            onEdit={(t) => replace(it.id, { text: t })}
-            onDelete={() => onChange(list.filter((x) => x.id !== it.id))}
-            onAddAfter={() => addAfter(it.id)}
-            onMove={(d) => move(it.id, d)} />
-        )} />
-
-      {adding ? (
-        <div className="flex items-center gap-1.5" style={{ padding: "4px 0" }}>
-          <span style={{ width: 14 }} />
-          <span className="rounded shrink-0" style={{ width: 17, height: 17, border: "1.6px dashed #C6CCC5" }} />
-          <input value={v} autoFocus onChange={(e) => setV(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") { e.preventDefault(); addAtEnd(e.ctrlKey || e.metaKey); return; }
-              if (e.key === "Escape") { setV(""); setAdding(false); }
-            }}
-            onBlur={() => addAtEnd(false)} placeholder="하위 목록 입력" className="flex-1 rounded-md"
-            style={{ padding: "3px 7px", fontSize: 13.5, border: "1px solid " + C.rule, background: "#F7F8F6", outline: "none", color: C.ink, minWidth: 0 }} />
-        </div>
-      ) : (
-        <button onClick={() => setAdding(true)} className="wb-btn inline-flex items-center gap-1"
-          style={{ background: "none", border: "none", color: C.faint, fontSize: 12, fontWeight: 650, cursor: "pointer", padding: "4px 0 0" }}>
-          <Plus size={12} strokeWidth={2.6} /> 하위 목록
-        </button>
-      )}
-
-      {hint && (adding || list.length > 1) && (
-        <div style={{ fontSize: 10.5, color: C.faint, marginTop: 5, lineHeight: 1.5 }}>
-          Ctrl+Enter 다음 항목 · Ctrl+↑↓ 순서 이동 · Enter 입력 마침
-        </div>
-      )}
-    </div>
-  );
-}
-
-function MemoView({ memos, onAdd, onDone, onDelete, onPatch, onReorder, onMove, hasProject }) {
-  const [v, setV] = useState("");
-  const [due, setDue] = useState({ due: "", dueTime: "", dueEnd: "" });
-  const [editingNew, setEditingNew] = useState(false);
-  const [dueId, setDueId] = useState(null);
-  const [textId, setTextId] = useState(null);
-  const [draft, setDraft] = useState("");
-
-  const submit = () => {
-    const items = splitList(v);
-    if (!items.length) return;
-    items.forEach((t) => onAdd(t, due.due, due.dueTime, due.dueEnd));
-    setV(""); setDue({ due: "", dueTime: "", dueEnd: "" }); setEditingNew(false);
-  };
-
-  const IconBtn = ({ icon: Icon, onClick, title, tone, disabled }) => (
-    <button onClick={onClick} title={title} aria-label={title} disabled={disabled}
-      className="wb-btn flex items-center justify-center rounded-lg shrink-0"
-      style={{ width: 31, height: 31, cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.4 : 1,
-        background: tone === "solid" ? C.navy : "transparent",
-        color: tone === "solid" ? "#fff" : tone === "seal" ? C.seal : C.faint,
-        border: "1px solid " + (tone === "solid" ? C.navy : C.rule) }}>
-      <Icon size={15} strokeWidth={2.3} />
-    </button>
-  );
-
-  return (
-    <div className="flex flex-col gap-3">
-      <Card style={{ padding: 14 }}>
-        <Label>새 할 일</Label>
-        <textarea value={v} onChange={(e) => setV(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(); }} rows={2}
-          placeholder="" className="w-full rounded-xl mt-2"
-          style={{ padding: "11px 13px", fontSize: 14.5, lineHeight: 1.5, color: C.ink, background: "#F7F8F6",
-            border: "1px solid " + C.rule, outline: "none", resize: "vertical" }} />
-        <div className="mt-2"><DueChip item={due} onClick={() => setEditingNew(!editingNew)} /></div>
-        {editingNew && <DueEditor value={due} onChange={setDue} onClose={() => setEditingNew(false)} />}
-        <div className="flex items-center justify-between mt-3">
-          <span className="inline-flex items-center gap-1" style={{ fontSize: 11.5, color: C.faint }}>
-            <CornerDownLeft size={12} /> 여러 줄을 붙여 넣으면 한 건씩 나뉩니다
-          </span>
-          <Btn kind="solid" icon={Plus} size="sm" onClick={submit}>담기</Btn>
-        </div>
-      </Card>
-
-      {memos.length === 0 ? (
-        <Card style={{ padding: 24, textAlign: "center", color: C.muted, fontSize: 13.5, lineHeight: 1.6 }}>
-          담아 둔 할 일이 없습니다.<br />체크하면 바로 없애고, 남길 것만 사업으로 보냅니다.
-        </Card>
-      ) : (
-        <>
-          <div className="flex items-center justify-between">
-            <Label>담아 둔 할 일 {memos.length}건</Label>
-            {memos.length > 1 && (
-              <span className="inline-flex items-center gap-1" style={{ fontSize: 11.5, color: C.faint }}>
-                <GripVertical size={12} /> 끌어서 순서 바꾸기
-              </span>
-            )}
-          </div>
-
-          <Sortable items={memos} idOf={(m) => m.id} onReorder={onReorder}
-            renderRow={(m, handle) => {
-              const no = memos.findIndex((x) => x.id === m.id) + 1;
-              const editing = textId === m.id;
-              const subs = m.subs || [];
-              const subDone = subs.filter((x) => x.done).length;
-              return (
-                <div style={{ marginBottom: 10 }}>
-                  <Card style={{ padding: "12px 13px" }}>
-                    <div className="flex items-start gap-2">
-                      <Handle props={handle} />
-
-                      <button onClick={() => onDone(m)} className="wb-btn flex items-center justify-center rounded-md shrink-0"
-                        style={{ width: 20, height: 20, marginTop: 2, border: "1.8px solid #C6CCC5", background: "transparent", cursor: "pointer" }}
-                        title="바로 처리하고 없애기" />
-
-                      <span className="shrink-0 flex items-center justify-center rounded-md"
-                        style={{ minWidth: 21, height: 21, marginTop: 1, background: "#F1F3F0", color: C.muted,
-                          fontSize: 11.5, fontWeight: 800, fontVariantNumeric: "tabular-nums", padding: "0 4px" }}>
-                        {no}
-                      </span>
-
-                      <div className="flex-1 min-w-0">
-                        {editing ? (
-                          <textarea value={draft} autoFocus rows={2} onChange={(e) => setDraft(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); const t = draft.trim(); if (t) onPatch(m.id, { text: t }); setTextId(null); }
-                              if (e.key === "Escape") setTextId(null);
-                            }}
-                            onBlur={() => { const t = draft.trim(); if (t) onPatch(m.id, { text: t }); setTextId(null); }}
-                            className="w-full rounded-lg"
-                            style={{ padding: "7px 9px", fontSize: 14.5, lineHeight: 1.5, color: C.ink, background: "#F7F8F6",
-                              border: "1px solid " + C.rule, outline: "none", resize: "vertical" }} />
-                        ) : (
-                          <div onClick={() => { setDraft(m.text); setTextId(m.id); }}
-                            style={{ fontSize: 14.5, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word", cursor: "text" }}>
-                            {m.text}
-                          </div>
-                        )}
-
-                        <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                          <DueChip item={m} onClick={() => setDueId(dueId === m.id ? null : m.id)} />
-                          {subs.length > 0 && (
-                            <Chip tone={subDone === subs.length ? "green" : "neutral"}>하위 {subDone}/{subs.length}</Chip>
-                          )}
-                        </div>
-                        {dueId === m.id && (
-                          <DueEditor value={m} onChange={(val) => onPatch(m.id, val)} onClose={() => setDueId(null)} />
-                        )}
-
-                        <SubChecklist subs={subs} onChange={(next) => onPatch(m.id, { subs: next })} />
-                      </div>
-
-                      <div className="flex items-center gap-1.5 shrink-0" style={{ marginTop: 1 }}>
-                        <IconBtn icon={Trash2} tone="seal" title="버리기" onClick={() => onDelete(m)} />
-                        <IconBtn icon={Send} tone="solid" title="사업으로 보내기" disabled={!hasProject}
-                          onClick={() => hasProject && onMove(m)} />
-                      </div>
-                    </div>
-                  </Card>
-                </div>
-              );
-            }} />
-        </>
       )}
     </div>
   );
