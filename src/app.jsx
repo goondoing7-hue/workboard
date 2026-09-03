@@ -5,7 +5,7 @@ import {
   Pencil, Wallet, WalletMinimal, ListChecks, Download, Upload,
   CornerDownLeft, GripVertical, ArrowUpDown, RotateCcw, LayoutGrid,
   Stamp, Sunrise, CircleDot, Palette, Cloud, CloudOff, RefreshCw, Copy, ShieldCheck, HardDriveDownload,
-  LogIn, HardDrive, Database, StickyNote, Pin, FileX, CornerDownRight, Bell, Globe,
+  LogIn, HardDrive, Database, StickyNote, Pin, FileX, CornerDownRight, Bell, Globe, Youtube,
   Star, Bold, Italic, Underline, Baseline, ImagePlus, MoreVertical, CheckSquare
 } from "lucide-react";
 
@@ -267,7 +267,7 @@ const VIEW_KEY = "workboard:view";
 const lastView = () => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch (e) { return {}; } };
 const saveView = (v) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch (e) {} };
 
-const APP_VERSION = "2026.09.04b";
+const APP_VERSION = "2026.09.05";
 const STORAGE_KEY = "workboard:data";
 
 /* 저장소 — 브라우저(localStorage)를 쓰고, Claude 아티팩트 안에서는 그쪽 저장소를 씁니다 */
@@ -1267,9 +1267,22 @@ export default function WorkBoard() {
   const addMemo = (text, due = "", dueTime = "", dueEnd = "") =>
     setData((d) => ({ ...d, memos: [...d.memos, { id: uid(), text, due, dueTime, dueEnd, createdAt: Date.now() }] }));
 
-  const addNote = (text, pid = "", extra) =>
-    setData((d) => ({ ...d, notes: [{ id: uid(), text, pid, html: escapeHtml(text), mode: "text", items: [],
-      color: "", important: false, ...(extra || {}), createdAt: Date.now(), updatedAt: Date.now() }, ...(d.notes || [])] }));
+  const addNote = (n) => setData((d) => ({
+    ...d,
+    notes: [{
+      id: uid(),
+      title: n.title || "",
+      text: n.text || "",
+      html: n.html !== undefined ? n.html : escapeHtml(n.text || ""),
+      mode: n.mode || "text",
+      items: n.items || [],
+      color: n.color || "",
+      important: !!n.important,
+      pid: n.pid || "",
+      createdAt: Date.now(), updatedAt: Date.now(),
+    }, ...(d.notes || [])],
+  }));
+
   const patchNote = (id, patch) =>
     setData((d) => ({ ...d, notes: (d.notes || []).map((n) => (n.id === id ? { ...n, ...patch, updatedAt: Date.now() } : n)) }));
   const removeNote = (n) => {
@@ -1718,30 +1731,6 @@ const findLinks = (text) => {
   });
   return out;
 };
-
-function LinkCard({ link }) {
-  const [bad, setBad] = useState(false);
-  return (
-    <a href={link.url} target="_blank" rel="noreferrer noopener"
-      onClick={(e) => e.stopPropagation()}
-      className="flex items-center gap-2 rounded-lg"
-      style={{ background: "rgba(255,255,255,0.75)", border: "1px solid " + C.rule,
-        padding: "7px 9px", marginTop: 6, textDecoration: "none", color: C.ink }}>
-      {bad ? (
-        <Globe size={14} color={C.faint} strokeWidth={2.2} className="shrink-0" />
-      ) : (
-        <img src={"https://www.google.com/s2/favicons?sz=64&domain=" + link.host} alt=""
-          onError={() => setBad(true)}
-          style={{ width: 16, height: 16, borderRadius: 3, flexShrink: 0 }} />
-      )}
-      <span className="flex-1 min-w-0">
-        <span className="block truncate" style={{ fontSize: 11.5, fontWeight: 700 }}>{link.host}</span>
-        <span className="block truncate" style={{ fontSize: 10, color: C.faint }}>{link.url}</span>
-      </span>
-      <ChevronRight size={13} color={C.faint} className="shrink-0" />
-    </a>
-  );
-}
 
 /* 접었다 펴는 묶음 */
 function Fold({ title, count, children, tone }) {
@@ -2469,7 +2458,7 @@ function SubDetail({ sub, color, onPatch, onToggleDoc, onAddTodo, onPatchTodo, o
 }
 
 /* ------------------------------------------------------------------
-   메모함 — 서식, 이미지, 체크리스트
+   메모함 — 서식, 사진, 체크리스트
 ------------------------------------------------------------------- */
 const NOTE_COLORS = [
   { k: "", bg: "#FFFFFF" }, { k: "y", bg: "#FDF6D8" }, { k: "g", bg: "#E7F2E9" },
@@ -2499,6 +2488,18 @@ const htmlToText = (html) => {
   d.innerHTML = (html || "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/(div|p|li|h1|h2)>/gi, "\n");
   return (d.textContent || "").trim();
 };
+/* 글 안의 첫 사진들을 꺼냅니다 */
+const imagesIn = (html) => {
+  const d = document.createElement("div");
+  d.innerHTML = html || "";
+  return [...d.querySelectorAll("img")].map((i) => i.getAttribute("src")).filter(Boolean);
+};
+
+/* 유튜브는 주소만으로 썸네일을 만들 수 있습니다 */
+const youtubeId = (url) => {
+  const m = String(url).match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([\w-]{6,})/);
+  return m ? m[1] : "";
+};
 
 /* 사진은 화면에 맞게 줄여서 담습니다 (동기화 용량 절약) */
 function shrinkImage(file, maxPx = 1280, quality = 0.72) {
@@ -2522,6 +2523,183 @@ function shrinkImage(file, maxPx = 1280, quality = 0.72) {
   });
 }
 
+function ProjectPicker({ projects, pid, onPick }) {
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      <button onClick={() => onPick("")} className="wb-btn rounded-full"
+        style={{ fontSize: 11.5, fontWeight: 700, padding: "4px 10px", cursor: "pointer",
+          background: !pid ? "#F1F3F0" : C.surface, color: !pid ? C.ink : C.faint,
+          border: "1px solid " + (!pid ? "#C9CFC7" : C.rule) }}>
+        사업 없음
+      </button>
+      {projects.map((p, i) => {
+        const c = colorOf(p, i);
+        const on = pid === p.id;
+        return (
+          <button key={p.id} onClick={() => onPick(p.id)} className="wb-btn inline-flex items-center gap-1.5 rounded-full"
+            style={{ fontSize: 11.5, fontWeight: 700, padding: "4px 10px", cursor: "pointer",
+              background: on ? c : C.surface, color: on ? "#fff" : C.muted,
+              border: "1px solid " + (on ? c : C.rule), maxWidth: "100%" }}>
+            {!on && <Dot color={c} size={7} />}
+            <span className="truncate">{p.name}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* 유튜브는 큰 그림으로, 나머지는 한 줄로 */
+function LinkCard({ link, big }) {
+  const [bad, setBad] = useState(false);
+  const yt = youtubeId(link.url);
+  if (yt && big) {
+    return (
+      <a href={link.url} target="_blank" rel="noreferrer noopener" onClick={(e) => e.stopPropagation()}
+        className="block rounded-lg overflow-hidden"
+        style={{ border: "1px solid " + C.rule, marginTop: 6, textDecoration: "none", color: C.ink,
+          background: "rgba(255,255,255,0.75)" }}>
+        <img src={"https://img.youtube.com/vi/" + yt + "/hqdefault.jpg"} alt=""
+          style={{ width: "100%", display: "block", aspectRatio: "16/9", objectFit: "cover" }} />
+        <span className="flex items-center gap-2" style={{ padding: "6px 8px" }}>
+          <Youtube size={14} color="#C2402F" strokeWidth={2.2} className="shrink-0" />
+          <span className="flex-1 min-w-0 truncate" style={{ fontSize: 11, fontWeight: 700 }}>youtube.com</span>
+          <ChevronRight size={13} color={C.faint} />
+        </span>
+      </a>
+    );
+  }
+  return (
+    <a href={link.url} target="_blank" rel="noreferrer noopener" onClick={(e) => e.stopPropagation()}
+      className="flex items-center gap-2 rounded-lg"
+      style={{ background: "rgba(255,255,255,0.75)", border: "1px solid " + C.rule,
+        padding: "6px 8px", marginTop: 6, textDecoration: "none", color: C.ink }}>
+      {bad ? (
+        <Globe size={14} color={C.faint} strokeWidth={2.2} className="shrink-0" />
+      ) : (
+        <img src={"https://www.google.com/s2/favicons?sz=64&domain=" + link.host} alt=""
+          onError={() => setBad(true)} style={{ width: 15, height: 15, borderRadius: 3, flexShrink: 0 }} />
+      )}
+      <span className="flex-1 min-w-0">
+        <span className="block truncate" style={{ fontSize: 11, fontWeight: 700 }}>{link.host}</span>
+        <span className="block truncate" style={{ fontSize: 9.5, color: C.faint }}>{link.url}</span>
+      </span>
+      <ChevronRight size={12} color={C.faint} className="shrink-0" />
+    </a>
+  );
+}
+
+/* ── 새 메모 입력칸: 접혀 있다가 누르면 펼쳐집니다 ── */
+function NoteComposer({ projects, onCreate }) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [text, setText] = useState("");
+  const [pid, setPid] = useState("");
+  const [mode, setMode] = useState("text");
+  const [items, setItems] = useState([]);
+  const fileRef = useRef(null);
+  const [imgHtml, setImgHtml] = useState("");
+
+  const reset = () => { setTitle(""); setText(""); setPid(""); setMode("text"); setItems([]); setImgHtml(""); setOpen(false); };
+  const save = () => {
+    const hasBody = text.trim() || imgHtml || items.some((x) => x.text.trim());
+    if (!title.trim() && !hasBody) { reset(); return; }
+    onCreate({
+      title: title.trim(),
+      text: text.trim() || title.trim(),
+      html: imgHtml + escapeHtml(text.trim()),
+      mode, items: items.filter((x) => x.text.trim()),
+      pid, color: "",
+    });
+    reset();
+  };
+  const addImage = async (file) => {
+    if (!file) return;
+    try {
+      const url = await shrinkImage(file);
+      setImgHtml((h) => h + `<div><img src="${url}" style="max-width:100%;border-radius:10px;display:block"></div>`);
+      setOpen(true);
+    } catch (e) {}
+  };
+
+  if (!open) {
+    return (
+      <Card style={{ padding: "10px 12px" }}>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setOpen(true)} className="wb-btn flex-1 text-left"
+            style={{ background: "none", border: "none", padding: "3px 0", cursor: "text",
+              fontSize: 14, color: C.faint, fontWeight: 600 }}>
+            메모 작성…
+          </button>
+          <button onClick={() => { setMode("check"); setItems([{ id: uid(), text: "", done: false }]); setOpen(true); }}
+            title="목록으로" className="wb-btn shrink-0" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 3 }}>
+            <CheckSquare size={17} strokeWidth={2.1} />
+          </button>
+          <button onClick={() => setOpen(true)} title="글쓰기"
+            className="wb-btn shrink-0" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 3 }}>
+            <Pencil size={17} strokeWidth={2.1} />
+          </button>
+          <button onClick={() => fileRef.current && fileRef.current.click()} title="사진 넣기"
+            className="wb-btn shrink-0" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 3 }}>
+            <ImagePlus size={17} strokeWidth={2.1} />
+          </button>
+          <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }}
+            onChange={(e) => { addImage(e.target.files && e.target.files[0]); e.target.value = ""; }} />
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card style={{ padding: "12px 13px" }}>
+      <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="제목" autoFocus
+        className="w-full" style={{ fontSize: 15, fontWeight: 700, color: C.ink, background: "transparent",
+          border: "none", outline: "none", padding: "2px 0" }} />
+
+      {imgHtml && (
+        <div className="wb-note-preview" style={{ margin: "6px 0" }} dangerouslySetInnerHTML={{ __html: imgHtml }} />
+      )}
+
+      {mode === "check" ? (
+        <div style={{ marginTop: 4 }}>
+          <SubChecklist subs={items} onChange={setItems} hint={false} />
+        </div>
+      ) : (
+        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={Math.max(2, text.split("\n").length)}
+          placeholder="메모 작성…" className="w-full"
+          style={{ fontSize: 14, lineHeight: 1.6, color: C.ink, background: "transparent", border: "none",
+            outline: "none", resize: "none", padding: "4px 0", fontFamily: FONT }} />
+      )}
+
+      {projects.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <ProjectPicker projects={projects} pid={pid} onPick={setPid} />
+        </div>
+      )}
+
+      <div className="flex items-center gap-1 mt-3">
+        <button onClick={() => { setMode(mode === "check" ? "text" : "check"); if (mode !== "check" && !items.length) setItems([{ id: uid(), text: "", done: false }]); }}
+          title="목록으로" className="wb-btn" style={{ background: mode === "check" ? "#E7EDF3" : "none", border: "none",
+            color: mode === "check" ? C.navy : C.muted, cursor: "pointer", padding: 5, borderRadius: 8 }}>
+          <CheckSquare size={16} strokeWidth={2.2} />
+        </button>
+        <button onClick={() => fileRef.current && fileRef.current.click()} title="사진 넣기"
+          className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 5 }}>
+          <ImagePlus size={16} strokeWidth={2.2} />
+        </button>
+        <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }}
+          onChange={(e) => { addImage(e.target.files && e.target.files[0]); e.target.value = ""; }} />
+        <button onClick={save} className="wb-btn"
+          style={{ marginLeft: "auto", background: "none", border: "none", color: C.ink,
+            fontSize: 13.5, fontWeight: 700, cursor: "pointer", padding: "5px 8px" }}>
+          닫기
+        </button>
+      </div>
+    </Card>
+  );
+}
+
+/* ── 메모 편집기 ── */
 function NoteEditor({ note, onPatch, onClose, onDelete, onDuplicate, projects }) {
   const ref = useRef(null);
   const dismiss = useDismiss(() => { save(); onClose(); });
@@ -2529,6 +2707,7 @@ function NoteEditor({ note, onPatch, onClose, onDelete, onDuplicate, projects })
   const [menu, setMenu] = useState(false);
   const [palette, setPalette] = useState("");
   const [busy, setBusy] = useState("");
+  const [pickedImg, setPickedImg] = useState(null);
   const mode = note.mode || "text";
 
   useEffect(() => {
@@ -2553,6 +2732,18 @@ function NoteEditor({ note, onPatch, onClose, onDelete, onDuplicate, projects })
     setBusy("");
   };
 
+  /* 사진을 누르면 크기를 고를 수 있습니다 */
+  const clickBody = (e) => {
+    if (e.target && e.target.tagName === "IMG") setPickedImg(e.target);
+    else setPickedImg(null);
+  };
+  const sizeImg = (pct) => {
+    if (!pickedImg) return;
+    pickedImg.style.width = pct === 100 ? "" : pct + "%";
+    pickedImg.style.maxWidth = "100%";
+    save();
+  };
+
   const items = note.items || [];
   const setItems = (next) => onPatch({ items: next });
 
@@ -2568,30 +2759,33 @@ function NoteEditor({ note, onPatch, onClose, onDelete, onDuplicate, projects })
     );
   };
 
+  const links = findLinks(mode === "check" ? items.map((x) => x.text).join(" ") : (htmlToText(note.html) || note.text));
+
   return (
     <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade"
       style={{ background: "rgba(26,33,30,0.4)", zIndex: 60 }} {...dismiss}>
       <div className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet flex flex-col"
         style={{ maxWidth: 620, background: noteBg(note.color), border: "1px solid " + C.rule, maxHeight: "90vh" }}>
 
-        <div className="flex items-center justify-between shrink-0" style={{ padding: "13px 15px 10px" }}>
-          <div className="flex items-center gap-2 min-w-0">
-            {note.important && <Star size={15} color={C.amber} fill={C.amber} strokeWidth={2} />}
-            <Label>메모 편집</Label>
-          </div>
-          <button onClick={() => { save(); onClose(); }} className="wb-btn"
-            style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}><X size={20} /></button>
+        <div className="flex items-center justify-between shrink-0" style={{ padding: "13px 15px 6px" }}>
+          <input value={note.title || ""} onChange={(e) => onPatch({ title: e.target.value })} placeholder="제목"
+            className="flex-1 min-w-0" style={{ fontSize: 16, fontWeight: 750, color: C.ink,
+              background: "transparent", border: "none", outline: "none" }} />
+          <button onClick={() => onPatch({ important: !note.important })} title="중요"
+            className="wb-btn shrink-0" style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>
+            <Star size={17} color={note.important ? C.amber : C.faint} fill={note.important ? C.amber : "none"} strokeWidth={2} />
+          </button>
         </div>
 
         <div className="flex-1 overflow-y-auto" style={{ padding: "0 15px" }}>
           {mode === "text" ? (
-            <div ref={ref} contentEditable suppressContentEditableWarning onBlur={save}
+            <div ref={ref} contentEditable suppressContentEditableWarning onBlur={save} onClick={clickBody}
               onPaste={(e) => {
                 const f = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith("image/"));
                 if (f) { e.preventDefault(); addImage(f.getAsFile()); }
               }}
               className="wb-note rounded-xl"
-              style={{ minHeight: 180, padding: "12px 13px", fontSize: 15, lineHeight: 1.75, color: C.ink,
+              style={{ minHeight: 170, padding: "12px 13px", fontSize: 15, lineHeight: 1.75, color: C.ink,
                 background: "rgba(255,255,255,0.6)", border: "1px solid " + C.rule, outline: "none", wordBreak: "break-word" }} />
           ) : (
             <div className="rounded-xl" style={{ padding: "10px 12px", background: "rgba(255,255,255,0.6)", border: "1px solid " + C.rule }}>
@@ -2599,8 +2793,25 @@ function NoteEditor({ note, onPatch, onClose, onDelete, onDuplicate, projects })
             </div>
           )}
 
-          {findLinks(mode === "check" ? items.map((x) => x.text).join(" ") : (htmlToText(note.html) || note.text)).slice(0, 5)
-            .map((l) => <LinkCard key={l.url} link={l} />)}
+          {pickedImg && mode === "text" && (
+            <div className="flex items-center gap-1.5 rounded-xl mt-2" style={{ background: "rgba(255,255,255,0.8)", border: "1px solid " + C.rule, padding: 8 }}>
+              <Label>사진 크기</Label>
+              {[40, 70, 100].map((v) => (
+                <button key={v} onClick={() => sizeImg(v)} className="wb-btn rounded-lg"
+                  style={{ fontSize: 11.5, fontWeight: 700, padding: "4px 10px", cursor: "pointer",
+                    background: C.surface, border: "1px solid " + C.rule, color: C.ink }}>
+                  {v === 40 ? "작게" : v === 70 ? "보통" : "크게"}
+                </button>
+              ))}
+              <button onClick={() => { pickedImg.remove(); setPickedImg(null); save(); }} className="wb-btn rounded-lg"
+                style={{ marginLeft: "auto", fontSize: 11.5, fontWeight: 700, padding: "4px 9px", cursor: "pointer",
+                  background: C.sealSoft, border: "none", color: C.seal }}>
+                사진 빼기
+              </button>
+            </div>
+          )}
+
+          {links.slice(0, 5).map((l) => <LinkCard key={l.url} link={l} big />)}
 
           {projects.length > 0 && (
             <div style={{ margin: "12px 0 4px" }}>
@@ -2633,7 +2844,6 @@ function NoteEditor({ note, onPatch, onClose, onDelete, onDuplicate, projects })
           {busy && <div style={{ fontSize: 12, color: C.muted, padding: "8px 2px" }}>{busy}</div>}
         </div>
 
-        {/* 도구 모음 */}
         <div className="shrink-0" style={{ borderTop: "1px solid " + C.rule, padding: "8px 10px", position: "relative" }}>
           <div className="flex items-center gap-0.5 flex-wrap">
             {mode === "text" && (
@@ -2647,9 +2857,12 @@ function NoteEditor({ note, onPatch, onClose, onDelete, onDuplicate, projects })
             )}
             {toolBtn(ImagePlus, "사진 추가", () => fileRef.current && fileRef.current.click())}
             {toolBtn(Palette, "메모 색", () => setPalette(palette === "note" ? "" : "note"), palette === "note")}
-            {toolBtn(Star, "중요 표시", () => onPatch({ important: !note.important }), note.important)}
-            <div style={{ marginLeft: "auto", position: "relative" }}>
+            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 2, position: "relative" }}>
               {toolBtn(MoreVertical, "더보기", () => setMenu(!menu), menu)}
+              <button onClick={() => { save(); onClose(); }} className="wb-btn"
+                style={{ background: "none", border: "none", color: C.ink, fontSize: 13.5, fontWeight: 700, cursor: "pointer", padding: "5px 8px" }}>
+                닫기
+              </button>
               {menu && (
                 <div className="rounded-xl wb-fade" style={{ position: "absolute", right: 0, bottom: 36, background: C.surface,
                   border: "1px solid " + C.rule, boxShadow: "0 8px 24px rgba(26,33,30,0.16)", padding: 5, minWidth: 176, zIndex: 20 }}>
@@ -2688,42 +2901,10 @@ function NoteEditor({ note, onPatch, onClose, onDelete, onDuplicate, projects })
   );
 }
 
-function ProjectPicker({ projects, pid, onPick }) {
-  return (
-    <div className="flex items-center gap-1.5 flex-wrap">
-      <button onClick={() => onPick("")} className="wb-btn rounded-full"
-        style={{ fontSize: 11.5, fontWeight: 700, padding: "4px 10px", cursor: "pointer",
-          background: !pid ? "#F1F3F0" : C.surface, color: !pid ? C.ink : C.faint,
-          border: "1px solid " + (!pid ? "#C9CFC7" : C.rule) }}>
-        사업 없음
-      </button>
-      {projects.map((p, i) => {
-        const c = colorOf(p, i);
-        const on = pid === p.id;
-        return (
-          <button key={p.id} onClick={() => onPick(p.id)} className="wb-btn inline-flex items-center gap-1.5 rounded-full"
-            style={{ fontSize: 11.5, fontWeight: 700, padding: "4px 10px", cursor: "pointer",
-              background: on ? c : C.surface, color: on ? "#fff" : C.muted,
-              border: "1px solid " + (on ? c : C.rule), maxWidth: "100%" }}>
-            {!on && <Dot color={c} size={7} />}
-            <span className="truncate">{p.name}</span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 function NotesView({ notes, projects, onAdd, onPatch, onDelete, onReorder, onOpenProject }) {
-  const [v, setV] = useState("");
-  const [pid, setPid] = useState("");
   const [filter, setFilter] = useState("all");
   const [openId, setOpenId] = useState(null);
 
-  const submit = () => {
-    const t = v.trim(); if (!t) return;
-    onAdd(t, pid); setV("");
-  };
   const infoOf = (id) => {
     const i = projects.findIndex((p) => p.id === id);
     return i < 0 ? null : { p: projects[i], color: colorOf(projects[i], i) };
@@ -2734,24 +2915,7 @@ function NotesView({ notes, projects, onAdd, onPatch, onDelete, onReorder, onOpe
 
   return (
     <div className="flex flex-col gap-3">
-      <Card style={{ padding: 14 }}>
-        <Label>새 메모</Label>
-        <textarea value={v} onChange={(e) => setV(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(); }} rows={2}
-          placeholder=""
-          className="w-full rounded-xl mt-2"
-          style={{ padding: "11px 13px", fontSize: 14.5, lineHeight: 1.6, color: C.ink, background: "#F7F8F6",
-            border: "1px solid " + C.rule, outline: "none", resize: "vertical" }} />
-        {projects.length > 0 && (
-          <div className="mt-2.5"><ProjectPicker projects={projects} pid={pid} onPick={setPid} /></div>
-        )}
-        <div className="flex items-center justify-between mt-3">
-          <span className="inline-flex items-center gap-1" style={{ fontSize: 11.5, color: C.faint }}>
-            <CornerDownLeft size={12} /> 담은 뒤 눌러서 서식·사진 추가
-          </span>
-          <Btn kind="solid" icon={Plus} size="sm" onClick={submit}>남기기</Btn>
-        </div>
-      </Card>
+      <NoteComposer projects={projects} onCreate={onAdd} />
 
       {notes.length > 1 && projects.length > 0 && (
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -2785,61 +2949,77 @@ function NotesView({ notes, projects, onAdd, onPatch, onDelete, onReorder, onOpe
             : "이 사업으로 묶인 메모가 없습니다."}
         </Card>
       ) : (
-        <Sortable items={shown} idOf={(n) => n.id} className="wb-masonry"
+        <Sortable items={shown} idOf={(n) => n.id} className="wb-masonry" deferred
           rowStyle={{ breakInside: "avoid", WebkitColumnBreakInside: "avoid", pageBreakInside: "avoid", display: "block" }}
           onReorder={(next) => onReorder(filter === "all" ? next : next.concat(notes.filter((n) => (n.pid || "") !== filter)))}
           renderRow={(n, handle) => {
             const info = infoOf(n.pid);
             const items = n.items || [];
             const done = items.filter((x) => x.done).length;
+            const pics = imagesIn(n.html);
+            const bodyText = (n.mode || "text") === "check" ? items.map((x) => x.text).join(" ") : (htmlToText(n.html) || n.text);
+            const links = findLinks(bodyText);
             return (
-              <div>
-                <Card style={{ padding: 11, background: noteBg(n.color),
+              <div {...handle} onClick={() => setOpenId(n.id)}
+                style={{ ...handle.style, cursor: "pointer" }}>
+                <Card style={{ padding: 0, background: noteBg(n.color), overflow: "hidden",
                   borderLeft: info ? "3px solid " + info.color : "1px solid " + C.rule }}>
-                  <div className="flex items-start gap-2">
-                    <Handle props={handle} />
-                    <div className="flex-1 min-w-0" onClick={() => setOpenId(n.id)} style={{ cursor: "pointer" }}>
-                      <div className="flex items-center gap-1.5 mb-1 flex-wrap">
-                        {n.important && <Star size={13} color={C.amber} fill={C.amber} strokeWidth={2} />}
-                        {info && (
-                          <span className="inline-flex items-center gap-1 rounded-full"
-                            style={{ background: "rgba(255,255,255,0.7)", border: "1px solid " + C.rule,
-                              fontSize: 10.5, fontWeight: 750, padding: "2px 8px", maxWidth: "100%", color: C.ink }}>
-                            <Dot color={info.color} size={7} /><span className="truncate">{info.p.name}</span>
-                          </span>
-                        )}
-                        {items.length > 0 && <Chip tone={done === items.length ? "green" : "neutral"}>{done}/{items.length}</Chip>}
-                      </div>
 
-                      {(n.mode || "text") === "check" ? (
-                        <div>
-                          {items.slice(0, 4).map((it) => (
-                            <div key={it.id} className="flex items-center gap-1.5" style={{ padding: "2px 0" }}>
-                              <span className="rounded shrink-0" style={{ width: 13, height: 13,
-                                border: "1.5px solid " + (it.done ? C.green : "#C6CCC5"), background: it.done ? C.green : "transparent" }} />
-                              <span className="truncate" style={{ fontSize: 13, color: it.done ? C.faint : C.ink,
-                                textDecoration: it.done ? "line-through" : "none" }}>{it.text}</span>
-                            </div>
-                          ))}
-                          {items.length > 4 && <div style={{ fontSize: 11.5, color: C.faint, marginTop: 3 }}>외 {items.length - 4}개</div>}
-                        </div>
-                      ) : (
-                        <div className="wb-note-preview"
-                          style={{ fontSize: 14, lineHeight: 1.6, wordBreak: "break-word", maxHeight: 150, overflow: "hidden" }}
-                          dangerouslySetInnerHTML={{ __html: n.html || escapeHtml(n.text) }} />
+                  {pics.length > 0 && (
+                    <div className="grid" style={{ gridTemplateColumns: pics.length > 1 ? "1fr 1fr" : "1fr", gap: 1 }}>
+                      {pics.slice(0, 4).map((src, i) => (
+                        <img key={i} src={src} alt=""
+                          style={{ width: "100%", height: pics.length > 1 ? 62 : 92, objectFit: "cover", display: "block" }} />
+                      ))}
+                    </div>
+                  )}
+
+                  <div style={{ padding: 11 }}>
+                    <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+                      {n.important && <Star size={13} color={C.amber} fill={C.amber} strokeWidth={2} />}
+                      {info && (
+                        <span className="inline-flex items-center gap-1 rounded-full"
+                          style={{ background: "rgba(255,255,255,0.7)", border: "1px solid " + C.rule,
+                            fontSize: 10, fontWeight: 750, padding: "1.5px 7px", maxWidth: "100%", color: C.ink }}>
+                          <Dot color={info.color} size={6} /><span className="truncate">{info.p.name}</span>
+                        </span>
                       )}
+                      {items.length > 0 && <Chip tone={done === items.length ? "green" : "neutral"}>{done}/{items.length}</Chip>}
+                    </div>
 
-                      {findLinks(n.mode === "check" ? items.map((x) => x.text).join(" ") : (htmlToText(n.html) || n.text)).slice(0, 3)
-                        .map((l) => <LinkCard key={l.url} link={l} />)}
-
-                      <div className="flex items-center justify-between mt-2">
-                        <span style={{ fontSize: 11, color: C.faint }}>
-                          {new Date(n.updatedAt || n.createdAt).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" })}
-                        </span>
-                        <span className="inline-flex items-center gap-1" style={{ fontSize: 11.5, color: C.faint, fontWeight: 650 }}>
-                          <Pencil size={12} /> 눌러서 편집
-                        </span>
+                    {n.title && (
+                      <div style={{ fontSize: 13.5, fontWeight: 700, lineHeight: 1.4, marginBottom: 4, wordBreak: "break-word" }}>
+                        {n.title}
                       </div>
+                    )}
+
+                    {(n.mode || "text") === "check" ? (
+                      <div>
+                        {items.slice(0, 8).map((it) => (
+                          <div key={it.id} className="flex items-center gap-1.5" style={{ padding: "2px 0" }}>
+                            <span className="rounded shrink-0" style={{ width: 12, height: 12,
+                              border: "1.5px solid " + (it.done ? C.green : "#C6CCC5"), background: it.done ? C.green : "transparent" }} />
+                            <span className="truncate" style={{ fontSize: 12.5, color: it.done ? C.faint : C.ink,
+                              textDecoration: it.done ? "line-through" : "none" }}>{it.text}</span>
+                          </div>
+                        ))}
+                        {items.length > 8 && <div style={{ fontSize: 11, color: C.faint, marginTop: 3 }}>외 {items.length - 8}개</div>}
+                      </div>
+                    ) : (
+                      <div className="wb-note-preview"
+                        style={{ fontSize: 13, lineHeight: 1.6, wordBreak: "break-word", maxHeight: 300, overflow: "hidden" }}
+                        dangerouslySetInnerHTML={{ __html: (n.html || escapeHtml(n.text)).replace(/<img[^>]*>/g, "") }} />
+                    )}
+
+                    {links.slice(0, 3).map((l) => <LinkCard key={l.url} link={l} big />)}
+
+                    <div className="flex items-center justify-between mt-2">
+                      <span style={{ fontSize: 10.5, color: C.faint }}>
+                        {new Date(n.updatedAt || n.createdAt).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" })}
+                      </span>
+                      <span className="inline-flex items-center gap-1" style={{ fontSize: 10.5, color: C.faint, fontWeight: 650 }}>
+                        <Pencil size={11} /> 눌러서 편집
+                      </span>
                     </div>
                   </div>
                 </Card>
@@ -2853,7 +3033,7 @@ function NotesView({ notes, projects, onAdd, onPatch, onDelete, onReorder, onOpe
           onPatch={(patch) => onPatch(open.id, patch)}
           onClose={() => setOpenId(null)}
           onDelete={() => { setOpenId(null); onDelete(open); }}
-          onDuplicate={() => { onAdd(open.text, open.pid, { html: open.html, mode: open.mode, items: open.items, color: open.color }); setOpenId(null); }} />
+          onDuplicate={() => { onAdd({ ...open, id: undefined }); setOpenId(null); }} />
       )}
     </div>
   );
