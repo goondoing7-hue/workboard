@@ -267,7 +267,7 @@ const VIEW_KEY = "workboard:view";
 const lastView = () => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch (e) { return {}; } };
 const saveView = (v) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch (e) {} };
 
-const APP_VERSION = "2026.09.09b";
+const APP_VERSION = "2026.09.09d";
 const STORAGE_KEY = "workboard:data";
 
 /* 저장소 — 브라우저(localStorage)를 쓰고, Claude 아티팩트 안에서는 그쪽 저장소를 씁니다 */
@@ -1943,11 +1943,16 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose }) {
 }
 
 function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSaveEvent, onDeleteEvent, onSetTodoTime }) {
+  const [tick, setTick] = useState(0);
+  useEffect(() => { const iv = setInterval(() => setTick((n) => n + 1), 60000); return () => clearInterval(iv); }, []);
+  const nowM = nowMin();
+  const nowTop = ((nowM - DAY_FROM * 60) / 60) * HOUR_H;
+  const nowIn = nowM >= DAY_FROM * 60 && nowM <= (DAY_TO + 1) * 60;
+
   const [mode, setMode] = useState("day");
   const [pick, setPick] = useState(todayISO());
   const [sheet, setSheet] = useState(null);
   const [drag, setDrag] = useState(null);      /* 시간 늘리기 */
-  const gridRef = useRef(null);
 
   const shiftDay = (n) => {
     const d = new Date(pick + "T00:00:00");
@@ -1981,10 +1986,11 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
   /* 시간표에서 위치 계산 */
   const topOf = (t) => ((toMin(t) - DAY_FROM * 60) / 60) * HOUR_H;
   const heightOf = (a, b) => Math.max(22, (((toMin(b) || toMin(a) + 60) - toMin(a)) / 60) * HOUR_H);
-  const minAt = (clientY) => {
-    const box = gridRef.current && gridRef.current.getBoundingClientRect();
-    if (!box) return DAY_FROM * 60;
-    return snap(DAY_FROM * 60 + ((clientY - box.top) / HOUR_H) * 60);
+
+  /* 날짜와 시각을 함께 옮깁니다 */
+  const moveTo = (x, date, start, end) => {
+    if (x.kind === "todo") onSetTodoTime(x.pid, x.sid, x.id, { due: date, dueTime: start, dueEnd: end });
+    else onSaveEvent({ ...x, date, start, end });
   };
 
   const applyTime = (x, start, end) => {
@@ -1992,24 +1998,39 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
     else onSaveEvent({ ...x, start, end });
   };
 
-  /* 아래 모서리를 끌어 길이 조절 */
-  const beginResize = (e, x, iso) => {
+  /* 아래 모서리를 끌어 길이 조절 — 창 전체에서 포인터를 따라갑니다 */
+  const dragRef = useRef(null);
+  useEffect(() => {
+    if (!drag) return;
+    const move = (ev) => {
+      const box = dragRef.current;
+      if (!box) return;
+      const r = box.getBoundingClientRect();
+      const m = snap(DAY_FROM * 60 + ((ev.clientY - r.top) / HOUR_H) * 60);
+      const s0 = toMin(drag.x.start);
+      if (m <= s0 + 10) return;
+      setDrag((cur) => (cur ? { ...cur, end: toHM(m) } : cur));
+    };
+    const up = () => {
+      setDrag((cur) => {
+        if (cur && cur.end) applyTime(cur.x, cur.x.start, cur.end);
+        return null;
+      });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+  }, [drag && drag.id]);
+
+  const beginResize = (e, x, colEl) => {
     e.preventDefault(); e.stopPropagation();
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
-    setDrag({ id: x.id, x, iso });
-  };
-  const moveResize = (e) => {
-    if (!drag) return;
-    const m = minAt(e.clientY);
-    const s = toMin(drag.x.start);
-    if (m <= s + 10) return;
-    setDrag({ ...drag, end: toHM(m) });
-  };
-  const endResize = (e) => {
-    if (!drag) return;
-    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (err) {}
-    if (drag.end) applyTime(drag.x, drag.x.start, drag.end);
-    setDrag(null);
+    dragRef.current = colEl;
+    setDrag({ id: x.id, x, end: x.end || "" });
   };
 
   const hours = [];
@@ -2018,7 +2039,13 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
   const Block = ({ x, iso, compact }) => {
     const showEnd = drag && drag.id === x.id && drag.end ? drag.end : x.end;
     return (
-      <div className="rounded-lg" style={{
+      <div className="rounded-lg" draggable
+        onDragStart={(ev) => {
+          ev.stopPropagation();
+          try { ev.dataTransfer.setData("text/plan", x.id); } catch (err) {}
+          ev.dataTransfer.effectAllowed = "move";
+        }}
+        style={{
         position: "absolute", left: 2, right: 3, top: topOf(x.start), height: heightOf(x.start, showEnd),
         background: x.hl || (x.kind === "event" ? "#EEF1F5" : C.navySoft),
         borderLeft: "3px solid " + x.color, overflow: "hidden", cursor: "pointer",
@@ -2035,9 +2062,8 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
             </div>
           )}
         </div>
-        <div onPointerDown={(e) => beginResize(e, x, iso)} onPointerMove={moveResize}
-          onPointerUp={endResize} onPointerCancel={endResize}
-          style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 8, cursor: "ns-resize", touchAction: "none" }}>
+        <div onPointerDown={(e) => beginResize(e, x, e.currentTarget.closest("[data-daycol]"))}
+          style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 10, cursor: "ns-resize", touchAction: "none" }}>
           <span style={{ display: "block", width: 26, height: 3, borderRadius: 3, background: "rgba(26,33,30,0.18)", margin: "2px auto" }} />
         </div>
       </div>
@@ -2045,7 +2071,7 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
   };
 
   const DayGrid = ({ iso, compact }) => (
-    <div ref={compact ? null : gridRef} style={{ position: "relative", height: (DAY_TO - DAY_FROM + 1) * HOUR_H }}
+    <div data-daycol style={{ position: "relative", height: (DAY_TO - DAY_FROM + 1) * HOUR_H }}
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
@@ -2055,7 +2081,8 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
         if (!x) return;
         const box = e.currentTarget.getBoundingClientRect();
         const m = snap(DAY_FROM * 60 + ((e.clientY - box.top) / HOUR_H) * 60);
-        applyTime({ ...x, date: iso }, toHM(m), toHM(m + 60));
+        const len = x.start && x.end ? Math.max(30, toMin(x.end) - toMin(x.start)) : 60;
+        moveTo(x, iso, toHM(m), toHM(m + len));
       }}>
       {hours.map((h, i) => (
         <div key={h} onClick={() => setSheet({ kind: "event", date: iso, start: toHM(h * 60), end: toHM(h * 60 + 60) })}
@@ -2063,6 +2090,12 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
             borderTop: "1px solid " + C.rule, cursor: "pointer" }} />
       ))}
       {timed(iso).map((x) => <Block key={x.id} x={x} iso={iso} compact={compact} />)}
+      {iso === todayISO() && nowIn && (
+        <div style={{ position: "absolute", left: 0, right: 0, top: nowTop, height: 0, zIndex: 6, pointerEvents: "none" }}>
+          <span style={{ position: "absolute", left: -4, top: -4, width: 8, height: 8, borderRadius: 99, background: C.seal }} />
+          <span style={{ display: "block", borderTop: "2px solid " + C.seal }} />
+        </div>
+      )}
     </div>
   );
 
@@ -2115,9 +2148,6 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
             );
           })}
         </div>
-        <button onClick={() => setPick(todayISO())} className="wb-btn rounded-lg"
-          style={{ background: C.surface, border: "1px solid " + C.rule, padding: "6px 11px",
-            fontSize: 12.5, fontWeight: 700, cursor: "pointer", color: C.ink }}>오늘</button>
         <button onClick={() => setSheet({ kind: "event", date: pick, start: "09:00", end: "10:00" })}
           className="wb-btn rounded-lg" style={{ marginLeft: "auto", background: C.navy, border: "none",
             color: "#fff", padding: "6px 11px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
@@ -2171,6 +2201,13 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
               const isToday = c.iso === todayISO();
               return (
                 <button key={c.iso} onClick={() => { setPick(c.iso); setMode("day"); }}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const id = e.dataTransfer.getData("text/plan");
+                    const x = all.find((y) => y.id === id);
+                    if (x) moveTo(x, c.iso, x.start, x.end);
+                  }}
                   className="wb-btn rounded-lg text-left"
                   style={{ minHeight: 58, padding: "3px 4px", cursor: "pointer",
                     background: isToday ? C.navySoft : "transparent",
@@ -2179,8 +2216,10 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
                   <div style={{ fontSize: 10.5, fontWeight: 750, color: isToday ? C.navy : C.ink,
                     fontVariantNumeric: "tabular-nums" }}>{c.num}</div>
                   {list.slice(0, 3).map((x) => (
-                    <div key={x.id} className="truncate" style={{ fontSize: 8.5, color: C.ink, lineHeight: 1.35,
-                      borderLeft: "2px solid " + x.color, paddingLeft: 3, marginTop: 1 }}>{x.title}</div>
+                    <div key={x.id} draggable
+                      onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData("text/plan", x.id); e.dataTransfer.effectAllowed = "move"; }}
+                      className="truncate" style={{ fontSize: 8.5, color: C.ink, lineHeight: 1.35,
+                        borderLeft: "2px solid " + x.color, paddingLeft: 3, marginTop: 1, cursor: "grab" }}>{x.title}</div>
                   ))}
                   {list.length > 3 && <div style={{ fontSize: 8, color: C.faint }}>+{list.length - 3}</div>}
                 </button>
@@ -2243,18 +2282,24 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
 
           <Card style={{ padding: "8px 10px 12px" }}>
             <div className="flex">
-              <div style={{ position: "relative", width: 34, height: (DAY_TO - DAY_FROM + 1) * HOUR_H, flexShrink: 0 }}>
+              <div style={{ position: "relative", width: 38, height: (DAY_TO - DAY_FROM + 1) * HOUR_H, flexShrink: 0 }}>
                 {hours.map((h, i) => (
                   <div key={h} style={{ position: "absolute", top: i * HOUR_H - 6, fontSize: 10, color: C.faint,
                     fontVariantNumeric: "tabular-nums" }}>{String(h).padStart(2, "0")}:00</div>
                 ))}
+                {pick === todayISO() && nowIn && (
+                  <div style={{ position: "absolute", top: nowTop - 7, right: 2, fontSize: 9.5, fontWeight: 800,
+                    color: C.seal, fontVariantNumeric: "tabular-nums", background: C.surface, padding: "0 2px" }}>
+                    {toHM(nowM)}
+                  </div>
+                )}
               </div>
               <div className="flex-1 min-w-0">
                 <DayGrid iso={pick} />
               </div>
             </div>
             <div style={{ fontSize: 10, color: C.faint, marginTop: 6 }}>
-              빈 곳을 누르면 새 일정 · 아래 손잡이를 끌면 시간이 늘어납니다
+              빈 곳을 누르면 새 일정 · 아래 손잡이를 끌면 시간 조절 · 블록을 끌면 자리 이동
             </div>
           </Card>
         </>
