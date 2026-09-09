@@ -5,7 +5,7 @@ import {
   Pencil, Wallet, WalletMinimal, ListChecks, Download, Upload,
   CornerDownLeft, GripVertical, ArrowUpDown, RotateCcw, LayoutGrid,
   Stamp, Sunrise, CircleDot, Palette, Cloud, CloudOff, RefreshCw, Copy, ShieldCheck, HardDriveDownload,
-  LogIn, HardDrive, Database, StickyNote, Pin, FileX, CornerDownRight, Bell, Globe, Youtube,
+  LogIn, HardDrive, Database, StickyNote, Pin, FileX, CornerDownRight, Bell, Globe, Youtube, MapPin, AlignLeft,
   Star, Bold, Italic, Underline, Baseline, ImagePlus, MoreVertical, CheckSquare
 } from "lucide-react";
 
@@ -267,7 +267,7 @@ const VIEW_KEY = "workboard:view";
 const lastView = () => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch (e) { return {}; } };
 const saveView = (v) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch (e) {} };
 
-const APP_VERSION = "2026.09.09";
+const APP_VERSION = "2026.09.09b";
 const STORAGE_KEY = "workboard:data";
 
 /* 저장소 — 브라우저(localStorage)를 쓰고, Claude 아티팩트 안에서는 그쪽 저장소를 씁니다 */
@@ -1109,7 +1109,7 @@ function HomeView({ data, rows, onDone, onEditTodo, onOpenSub, onOpenProject, on
    메인
 ------------------------------------------------------------------- */
 export default function WorkBoard() {
-  const [data, setDataRaw] = useState({ projects: [], memos: [], notes: [], dueOrder: [], topOrder: [], planHidden: [], dueManual: false, updatedAt: 0 });
+  const [data, setDataRaw] = useState({ projects: [], memos: [], notes: [], dueOrder: [], topOrder: [], planHidden: [], events: [], dueManual: false, updatedAt: 0 });
   const [loaded, setLoaded] = useState(false);
   const [storageOK, setStorageOK] = useState(true);
   const [sync, setSync] = useState(() => loadSync());
@@ -1134,7 +1134,7 @@ export default function WorkBoard() {
   });
 
   const normalize = (p) => ({
-    projects: p.projects || [], memos: p.memos || [], notes: p.notes || [], dueOrder: p.dueOrder || [], topOrder: p.topOrder || [], planHidden: p.planHidden || [],
+    projects: p.projects || [], memos: p.memos || [], notes: p.notes || [], dueOrder: p.dueOrder || [], topOrder: p.topOrder || [], planHidden: p.planHidden || [], events: p.events || [],
     dueManual: !!p.dueManual, updatedAt: p.updatedAt || 0,
   });
 
@@ -1667,12 +1667,41 @@ export default function WorkBoard() {
           )}
 
           {tab === "plan" && (
-            <PlanView data={data} rows={homeRows} onOpenSub={openSubPage}
+            <PlanView data={data} rows={homeRows} events={data.events || []} onOpenSub={openSubPage}
               hidden={data.planHidden || []}
               onToggleHidden={(pid) => setData((d) => {
                 const h = d.planHidden || [];
                 return { ...d, planHidden: h.includes(pid) ? h.filter((x) => x !== pid) : [...h, pid] };
-              })} />
+              })}
+              onSetTodoTime={(pid, sid, tid, patch) => patchTodo(pid, sid, tid, patch)}
+              onDeleteEvent={(id) => setData((d) => ({ ...d, events: (d.events || []).filter((e) => e.id !== id) }))}
+              onSaveEvent={(v) => {
+                if (v.kind === "todo") {
+                  const proj = data.projects.find((x) => x.id === v.pid);
+                  if (!proj) { flash("사업을 골라 주세요"); return; }
+                  let target = v.sid;
+                  if (!target) {
+                    const box = proj.subs.find(isInbox);
+                    if (box) target = box.id;
+                  }
+                  if (v.id) {
+                    patchTodo(v.pid, v.sid, v.id, { text: v.title, due: v.date, dueTime: v.start, dueEnd: v.end });
+                  } else if (target) {
+                    addTodo(v.pid, target, v.title, v.date, v.start, v.end);
+                  } else {
+                    quickTodo(v.pid, v.title);
+                    flash("미분류에 담았습니다");
+                  }
+                  return;
+                }
+                setData((d) => {
+                  const list = d.events || [];
+                  if (v.id && list.some((e) => e.id === v.id)) {
+                    return { ...d, events: list.map((e) => (e.id === v.id ? { ...e, ...v } : e)) };
+                  }
+                  return { ...d, events: [...list, { ...v, id: v.id || uid(), createdAt: Date.now() }] };
+                });
+              }} />
           )}
 
           {tab === "notes" && (
@@ -1749,167 +1778,494 @@ export default function WorkBoard() {
 }
 
 /* ------------------------------------------------------------------
-   일정 — 사업별로 골라 보는 시간표
+   일정 — 월 · 주 · 일 보기, 끌어서 시간 맞추기
 ------------------------------------------------------------------- */
-function PlanView({ data, rows, onOpenSub, hidden, onToggleHidden }) {
-  const [base, setBase] = useState(todayISO());
-  const [pick, setPick] = useState(todayISO());
+const HOUR_H = 46;          /* 한 시간의 높이(px) */
+const DAY_FROM = 7, DAY_TO = 21;
+const CENTER = "__center__";
 
-  /* 일~토 한 주 */
-  const weekStart = (() => {
-    const d = new Date(base + "T00:00:00");
-    d.setDate(d.getDate() - d.getDay());
-    return d;
-  })();
-  const week = [0, 1, 2, 3, 4, 5, 6].map((k) => {
-    const d = new Date(weekStart);
-    d.setDate(d.getDate() + k);
-    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-    const iso = d.toISOString().slice(0, 10);
-    return { iso, wd: ["일", "월", "화", "수", "목", "금", "토"][k], num: Number(iso.slice(8, 10)) };
-  });
+const toMin = (t) => (t ? Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5)) : null);
+const toHM = (m) => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
+const snap = (m) => Math.max(0, Math.min(24 * 60 - 10, Math.round(m / 10) * 10));
 
-  const shift = (n) => {
-    const d = new Date(base + "T00:00:00");
-    d.setDate(d.getDate() + n * 7);
-    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-    setBase(d.toISOString().slice(0, 10));
+/* 일정 만들기 · 고치기 */
+function PlanSheet({ init, projects, onSave, onDelete, onClose }) {
+  const dismiss = useDismiss(onClose);
+  const [kind, setKind] = useState(init.kind || "event");
+  const [title, setTitle] = useState(init.title || "");
+  const [date, setDate] = useState(init.date || todayISO());
+  const [start, setStart] = useState(init.start || "09:00");
+  const [end, setEnd] = useState(init.end || "10:00");
+  const [noTime, setNoTime] = useState(!init.start);
+  const [pid, setPid] = useState(init.pid || "");
+  const [sid, setSid] = useState(init.sid || "");
+  const [place, setPlace] = useState(init.place || "");
+  const [memo, setMemo] = useState(init.memo || "");
+
+  const proj = projects.find((p) => p.id === pid);
+  const subs = proj ? liveSubs(proj) : [];
+
+  const Field = ({ icon: Icon, children }) => (
+    <div className="flex items-start gap-2.5" style={{ padding: "9px 0", borderTop: "1px solid " + C.rule }}>
+      <Icon size={15} color={C.faint} strokeWidth={2.2} style={{ marginTop: 3, flexShrink: 0 }} />
+      <div className="flex-1 min-w-0">{children}</div>
+    </div>
+  );
+  const inp = { padding: "7px 9px", fontSize: 13.5, border: "1px solid " + C.rule, background: C.surface,
+    outline: "none", color: C.ink, borderRadius: 8, minWidth: 0, fontFamily: FONT };
+
+  const save = () => {
+    const t = title.trim();
+    if (!t) { onClose(); return; }
+    onSave({
+      id: init.id, kind, title: t, date,
+      start: noTime ? "" : start, end: noTime ? "" : end,
+      pid: kind === "todo" ? pid : (pid || ""), sid: kind === "todo" ? sid : "",
+      place: kind === "event" ? place.trim() : "",
+      memo: kind === "event" ? memo.trim() : "",
+    });
   };
 
-  const visible = rows.filter((r) => !hidden.includes(r.pid));
-  const dayRows = visible.filter((r) => r.due === pick);
-  const timed = dayRows.filter((r) => r.dueTime).sort((a, b) => a.dueTime.localeCompare(b.dueTime));
-  const allDay = dayRows.filter((r) => !r.dueTime);
+  return (
+    <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade"
+      style={{ background: "rgba(26,33,30,0.4)", zIndex: 60 }} {...dismiss}>
+      <div className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
+        style={{ maxWidth: 460, background: C.bg, border: "1px solid " + C.rule, maxHeight: "88vh", overflowY: "auto" }}>
 
-  /* 시간표는 가장 이른 일정 한 시간 전부터 */
-  const first = timed.length ? Number(timed[0].dueTime.slice(0, 2)) : 9;
-  const last = timed.length ? Math.max(...timed.map((r) => Number((r.dueEnd || r.dueTime).slice(0, 2)))) : 18;
-  const from = Math.max(0, Math.min(first, 9) - 1);
-  const to = Math.min(23, Math.max(last + 1, 19));
+        <div className="flex items-center justify-between" style={{ padding: "14px 16px 8px" }}>
+          <Label>{init.id ? "일정 고치기" : "새 일정"}</Label>
+          <button onClick={onClose} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>
+            <X size={19} />
+          </button>
+        </div>
+
+        <div style={{ padding: "0 16px 16px" }}>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="제목 추가" autoFocus
+            className="w-full" style={{ fontSize: 17, fontWeight: 700, color: C.ink, background: "transparent",
+              border: "none", borderBottom: "2px solid " + C.navy, outline: "none", padding: "6px 2px", marginBottom: 10 }} />
+
+          <div className="flex rounded-lg" style={{ background: "#F1F3F0", padding: 3, gap: 3, marginBottom: 4 }}>
+            {[{ k: "event", t: "일정" }, { k: "todo", t: "업무" }].map((o) => {
+              const on = kind === o.k;
+              return (
+                <button key={o.k} onClick={() => setKind(o.k)} className="wb-btn flex-1 rounded-md"
+                  style={{ padding: "7px 4px", fontSize: 13, fontWeight: 700, cursor: "pointer",
+                    background: on ? C.surface : "transparent", color: on ? C.ink : C.faint,
+                    border: "1px solid " + (on ? C.rule : "transparent") }}>{o.t}</button>
+              );
+            })}
+          </div>
+
+          <Field icon={Clock}>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full" style={inp} />
+            <label className="flex items-center gap-1.5 mt-2" style={{ fontSize: 12.5, color: C.muted, cursor: "pointer" }}>
+              <input type="checkbox" checked={noTime} onChange={(e) => setNoTime(e.target.checked)} />
+              시간 미정
+            </label>
+            {!noTime && (
+              <div className="flex items-center gap-2 mt-2">
+                <input type="time" value={start} onChange={(e) => setStart(e.target.value)} style={{ ...inp, flex: 1 }} />
+                <span style={{ color: C.faint }}>–</span>
+                <input type="time" value={end} onChange={(e) => setEnd(e.target.value)} style={{ ...inp, flex: 1 }} />
+              </div>
+            )}
+          </Field>
+
+          <Field icon={FolderClosed}>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <button onClick={() => { setPid(""); setSid(""); }} className="wb-btn rounded-full"
+                style={{ fontSize: 11.5, fontWeight: 700, padding: "4px 10px", cursor: "pointer",
+                  background: !pid ? C.navy : C.surface, color: !pid ? "#fff" : C.muted,
+                  border: "1px solid " + (!pid ? C.navy : C.rule) }}>
+                센터 일정
+              </button>
+              {projects.map((p, i) => {
+                const c = colorOf(p, i), on = pid === p.id;
+                return (
+                  <button key={p.id} onClick={() => { setPid(p.id); setSid(""); }} className="wb-btn inline-flex items-center gap-1.5 rounded-full"
+                    style={{ fontSize: 11.5, fontWeight: 700, padding: "4px 10px", cursor: "pointer",
+                      background: on ? c : C.surface, color: on ? "#fff" : C.muted,
+                      border: "1px solid " + (on ? c : C.rule), maxWidth: "100%" }}>
+                    {!on && <Dot color={c} size={7} />}
+                    <span className="truncate">{p.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {kind === "todo" && proj && (
+              <div className="mt-2">
+                <Label>세부사업</Label>
+                <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
+                  {subs.length === 0 && <span style={{ fontSize: 11.5, color: C.faint }}>세부사업이 없습니다. 미분류로 담깁니다</span>}
+                  {subs.map((s2, i) => {
+                    const on = sid === s2.id;
+                    const bg = subColor(s2, i, colorOf(proj, projects.findIndex((x) => x.id === pid)));
+                    return (
+                      <button key={s2.id} onClick={() => setSid(s2.id)} className="wb-btn rounded-full"
+                        style={{ fontSize: 11.5, fontWeight: 700, padding: "4px 10px", cursor: "pointer",
+                          background: bg, color: C.ink, border: "1px solid " + (on ? C.ink : "transparent"), maxWidth: "100%" }}>
+                        <span className="truncate">{s2.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </Field>
+
+          {kind === "event" && (
+            <>
+              <Field icon={MapPin}>
+                <input value={place} onChange={(e) => setPlace(e.target.value)} placeholder="위치 추가"
+                  className="w-full" style={{ ...inp, border: "none", background: "transparent", padding: "3px 0" }} />
+              </Field>
+              <Field icon={AlignLeft}>
+                <textarea value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="설명 추가" rows={2}
+                  className="w-full" style={{ ...inp, border: "none", background: "transparent", padding: "3px 0", resize: "none" }} />
+              </Field>
+            </>
+          )}
+
+          <div className="flex items-center gap-2 mt-4">
+            {init.id && onDelete && (
+              <DeleteBtn onDelete={onDelete} label="삭제" />
+            )}
+            <div className="flex items-center gap-2" style={{ marginLeft: "auto" }}>
+              <Btn size="sm" onClick={onClose}>취소</Btn>
+              <Btn size="sm" kind="solid" icon={Check} onClick={save}>저장</Btn>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSaveEvent, onDeleteEvent, onSetTodoTime }) {
+  const [mode, setMode] = useState("day");
+  const [pick, setPick] = useState(todayISO());
+  const [sheet, setSheet] = useState(null);
+  const [drag, setDrag] = useState(null);      /* 시간 늘리기 */
+  const gridRef = useRef(null);
+
+  const shiftDay = (n) => {
+    const d = new Date(pick + "T00:00:00");
+    d.setDate(d.getDate() + n);
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    setPick(d.toISOString().slice(0, 10));
+  };
+  const shiftBy = (n) => shiftDay(mode === "day" ? n : mode === "week" ? n * 7 : n * 30);
+
+  /* 할 일과 일정을 한 줄기로 */
+  const projIdx = (pid) => data.projects.findIndex((p) => p.id === pid);
+  const colorFor = (pid) => (pid ? colorOf(data.projects[projIdx(pid)] || {}, Math.max(0, projIdx(pid))) : C.navy);
+  const nameFor = (pid) => (pid ? shortName((data.projects[projIdx(pid)] || {}).name) : "센터");
+
+  const all = [
+    ...rows.map((r) => ({
+      id: r.id, kind: "todo", title: r.text, date: r.due, start: r.dueTime || "", end: r.dueEnd || "",
+      pid: r.pid, sid: r.sid, sName: r.sName, color: r.pColor, hl: r.hl,
+    })),
+    ...(events || []).map((e) => ({
+      id: e.id, kind: "event", title: e.title, date: e.date, start: e.start || "", end: e.end || "",
+      pid: e.pid || "", sid: "", place: e.place, memo: e.memo,
+      color: colorFor(e.pid || ""), hl: "",
+    })),
+  ].filter((x) => x.date && !hidden.includes(x.pid || CENTER));
+
+  const onDay = (iso) => all.filter((x) => x.date === iso);
+  const timed = (iso) => onDay(iso).filter((x) => x.start).sort((a, b) => a.start.localeCompare(b.start));
+  const untimed = (iso) => onDay(iso).filter((x) => !x.start);
+
+  /* 시간표에서 위치 계산 */
+  const topOf = (t) => ((toMin(t) - DAY_FROM * 60) / 60) * HOUR_H;
+  const heightOf = (a, b) => Math.max(22, (((toMin(b) || toMin(a) + 60) - toMin(a)) / 60) * HOUR_H);
+  const minAt = (clientY) => {
+    const box = gridRef.current && gridRef.current.getBoundingClientRect();
+    if (!box) return DAY_FROM * 60;
+    return snap(DAY_FROM * 60 + ((clientY - box.top) / HOUR_H) * 60);
+  };
+
+  const applyTime = (x, start, end) => {
+    if (x.kind === "todo") onSetTodoTime(x.pid, x.sid, x.id, { dueTime: start, dueEnd: end });
+    else onSaveEvent({ ...x, start, end });
+  };
+
+  /* 아래 모서리를 끌어 길이 조절 */
+  const beginResize = (e, x, iso) => {
+    e.preventDefault(); e.stopPropagation();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+    setDrag({ id: x.id, x, iso });
+  };
+  const moveResize = (e) => {
+    if (!drag) return;
+    const m = minAt(e.clientY);
+    const s = toMin(drag.x.start);
+    if (m <= s + 10) return;
+    setDrag({ ...drag, end: toHM(m) });
+  };
+  const endResize = (e) => {
+    if (!drag) return;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (err) {}
+    if (drag.end) applyTime(drag.x, drag.x.start, drag.end);
+    setDrag(null);
+  };
+
   const hours = [];
-  for (let h = from; h <= to; h++) hours.push(h);
+  for (let h = DAY_FROM; h <= DAY_TO; h++) hours.push(h);
 
-  const atHour = (h) => timed.filter((r) => Number(r.dueTime.slice(0, 2)) === h);
-  const cnt = (iso) => visible.filter((r) => r.due === iso).length;
+  const Block = ({ x, iso, compact }) => {
+    const showEnd = drag && drag.id === x.id && drag.end ? drag.end : x.end;
+    return (
+      <div className="rounded-lg" style={{
+        position: "absolute", left: 2, right: 3, top: topOf(x.start), height: heightOf(x.start, showEnd),
+        background: x.hl || (x.kind === "event" ? "#EEF1F5" : C.navySoft),
+        borderLeft: "3px solid " + x.color, overflow: "hidden", cursor: "pointer",
+        boxShadow: "0 1px 2px rgba(26,33,30,0.06)" }}
+        onClick={(ev) => { ev.stopPropagation(); setSheet({ ...x, kind: x.kind }); }}>
+        <div style={{ padding: compact ? "2px 4px" : "3px 7px" }}>
+          <div style={{ fontSize: compact ? 8.5 : 10, fontWeight: 750, color: C.muted, fontVariantNumeric: "tabular-nums" }}>
+            {x.start}{showEnd ? "–" + showEnd : ""}
+          </div>
+          <div className="truncate" style={{ fontSize: compact ? 9.5 : 12, fontWeight: 650, color: C.ink }}>{x.title}</div>
+          {!compact && (
+            <div className="truncate" style={{ fontSize: 9.5, color: C.faint }}>
+              {nameFor(x.pid)}{x.sName ? " · " + x.sName : ""}{x.place ? " · " + x.place : ""}
+            </div>
+          )}
+        </div>
+        <div onPointerDown={(e) => beginResize(e, x, iso)} onPointerMove={moveResize}
+          onPointerUp={endResize} onPointerCancel={endResize}
+          style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 8, cursor: "ns-resize", touchAction: "none" }}>
+          <span style={{ display: "block", width: 26, height: 3, borderRadius: 3, background: "rgba(26,33,30,0.18)", margin: "2px auto" }} />
+        </div>
+      </div>
+    );
+  };
+
+  const DayGrid = ({ iso, compact }) => (
+    <div ref={compact ? null : gridRef} style={{ position: "relative", height: (DAY_TO - DAY_FROM + 1) * HOUR_H }}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        e.preventDefault();
+        const raw = e.dataTransfer.getData("text/plan");
+        if (!raw) return;
+        const x = all.find((y) => y.id === raw);
+        if (!x) return;
+        const box = e.currentTarget.getBoundingClientRect();
+        const m = snap(DAY_FROM * 60 + ((e.clientY - box.top) / HOUR_H) * 60);
+        applyTime({ ...x, date: iso }, toHM(m), toHM(m + 60));
+      }}>
+      {hours.map((h, i) => (
+        <div key={h} onClick={() => setSheet({ kind: "event", date: iso, start: toHM(h * 60), end: toHM(h * 60 + 60) })}
+          style={{ position: "absolute", top: i * HOUR_H, left: 0, right: 0, height: HOUR_H,
+            borderTop: "1px solid " + C.rule, cursor: "pointer" }} />
+      ))}
+      {timed(iso).map((x) => <Block key={x.id} x={x} iso={iso} compact={compact} />)}
+    </div>
+  );
+
+  /* 월 보기 */
+  const monthCells = (() => {
+    const d = new Date(pick + "T00:00:00");
+    const first = new Date(d.getFullYear(), d.getMonth(), 1);
+    const startDay = first.getDay();
+    const cells = [];
+    for (let i = 0; i < 42; i++) {
+      const c = new Date(first);
+      c.setDate(1 - startDay + i);
+      c.setMinutes(c.getMinutes() - c.getTimezoneOffset());
+      const iso = c.toISOString().slice(0, 10);
+      cells.push({ iso, num: Number(iso.slice(8, 10)), inMonth: iso.slice(0, 7) === pick.slice(0, 7) });
+    }
+    return cells;
+  })();
+
+  const weekDays = (() => {
+    const d = new Date(pick + "T00:00:00");
+    d.setDate(d.getDate() - d.getDay());
+    return [0, 1, 2, 3, 4, 5, 6].map((k) => {
+      const c = new Date(d);
+      c.setDate(c.getDate() + k);
+      c.setMinutes(c.getMinutes() - c.getTimezoneOffset());
+      const iso = c.toISOString().slice(0, 10);
+      return { iso, wd: ["일", "월", "화", "수", "목", "금", "토"][k], num: Number(iso.slice(8, 10)) };
+    });
+  })();
+
+  const headLabel = mode === "month"
+    ? Number(pick.slice(5, 7)) + "월"
+    : mode === "week"
+      ? Number(weekDays[0].iso.slice(5, 7)) + "." + weekDays[0].num + " – " + Number(weekDays[6].iso.slice(5, 7)) + "." + weekDays[6].num
+      : Number(pick.slice(5, 7)) + "월 " + Number(pick.slice(8, 10)) + "일 (" + ["일", "월", "화", "수", "목", "금", "토"][new Date(pick + "T00:00:00").getDay()] + ")";
 
   return (
     <div className="flex flex-col gap-3">
-      {/* 사업 고르기 */}
-      <Card style={{ padding: "11px 13px" }}>
+      {/* 보기 전환 */}
+      <div className="flex items-center gap-2">
+        <div className="flex rounded-lg" style={{ background: "#F1F3F0", padding: 3, gap: 3 }}>
+          {[{ k: "month", t: "월간" }, { k: "week", t: "주간" }, { k: "day", t: "일간" }].map((o) => {
+            const on = mode === o.k;
+            return (
+              <button key={o.k} onClick={() => setMode(o.k)} className="wb-btn rounded-md"
+                style={{ padding: "6px 12px", fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+                  background: on ? C.surface : "transparent", color: on ? C.ink : C.faint,
+                  border: "1px solid " + (on ? C.rule : "transparent") }}>{o.t}</button>
+            );
+          })}
+        </div>
+        <button onClick={() => setPick(todayISO())} className="wb-btn rounded-lg"
+          style={{ background: C.surface, border: "1px solid " + C.rule, padding: "6px 11px",
+            fontSize: 12.5, fontWeight: 700, cursor: "pointer", color: C.ink }}>오늘</button>
+        <button onClick={() => setSheet({ kind: "event", date: pick, start: "09:00", end: "10:00" })}
+          className="wb-btn rounded-lg" style={{ marginLeft: "auto", background: C.navy, border: "none",
+            color: "#fff", padding: "6px 11px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
+          <Plus size={13} strokeWidth={2.6} style={{ display: "inline", verticalAlign: "-2px" }} /> 추가
+        </button>
+      </div>
+
+      {/* 날짜 이동 */}
+      <div className="flex items-center justify-between">
+        <button onClick={() => shiftBy(-1)} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 4 }}>
+          <ChevronLeft size={17} />
+        </button>
+        <span style={{ fontSize: 14, fontWeight: 780 }}>{headLabel}</span>
+        <button onClick={() => shiftBy(1)} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 4 }}>
+          <ChevronRight size={17} />
+        </button>
+      </div>
+
+      {/* 표시할 일정 */}
+      <Card style={{ padding: "10px 12px" }}>
         <Label>표시할 일정</Label>
-        <div className="flex flex-col gap-1 mt-2">
-          <div className="flex items-center gap-2" style={{ padding: "3px 0" }}>
-            <span className="rounded" style={{ width: 4, height: 14, background: C.navy }} />
-            <span style={{ fontSize: 12.5, fontWeight: 750 }}>센터 일정</span>
-            <span style={{ fontSize: 10.5, color: C.faint, marginLeft: "auto" }}>전체 {visible.length}</span>
+        <div className="flex items-center gap-1.5 flex-wrap mt-2">
+          {[{ id: CENTER, name: "센터 일정", color: C.navy }, ...data.projects.map((p, i) => ({ id: p.id, name: p.name, color: colorOf(p, i) }))]
+            .map((o) => {
+              const off = hidden.includes(o.id);
+              return (
+                <button key={o.id} onClick={() => onToggleHidden(o.id)} className="wb-btn inline-flex items-center gap-1.5 rounded-full"
+                  style={{ fontSize: 11.5, fontWeight: 700, padding: "4px 10px", cursor: "pointer",
+                    background: off ? C.surface : o.color, color: off ? C.faint : "#fff",
+                    border: "1px solid " + (off ? C.rule : o.color), maxWidth: "100%" }}>
+                  {off ? <span className="rounded" style={{ width: 8, height: 8, border: "1.5px solid " + o.color }} />
+                       : <Check size={11} strokeWidth={3} />}
+                  <span className="truncate">{o.name}</span>
+                </button>
+              );
+            })}
+        </div>
+      </Card>
+
+      {/* 월간 */}
+      {mode === "month" && (
+        <Card style={{ padding: "8px 9px 10px" }}>
+          <div className="grid grid-cols-7" style={{ gap: 2, marginBottom: 3 }}>
+            {["일", "월", "화", "수", "목", "금", "토"].map((d) => (
+              <div key={d} style={{ fontSize: 10, fontWeight: 700, color: C.faint, textAlign: "center" }}>{d}</div>
+            ))}
           </div>
-          {data.projects.map((p, i) => {
-            const off = hidden.includes(p.id);
-            const c = colorOf(p, i);
-            return (
-              <button key={p.id} onClick={() => onToggleHidden(p.id)}
-                className="wb-btn flex items-center gap-2 text-left"
-                style={{ background: "none", border: "none", padding: "3px 0", cursor: "pointer", opacity: off ? 0.45 : 1 }}>
-                <span className="flex items-center justify-center rounded shrink-0"
-                  style={{ width: 15, height: 15, background: off ? "transparent" : c,
-                    border: "1.5px solid " + (off ? "#C6CCC5" : c), color: "#fff" }}>
-                  {!off && <Check size={10} strokeWidth={3.4} />}
-                </span>
-                <span className="truncate" style={{ fontSize: 12.5, color: C.ink }}>{p.name}</span>
-                <span className="shrink-0" style={{ fontSize: 10.5, color: C.faint, marginLeft: "auto" }}>
-                  {rows.filter((r) => r.pid === p.id).length}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </Card>
+          <div className="grid grid-cols-7" style={{ gap: 2 }}>
+            {monthCells.map((c) => {
+              const list = onDay(c.iso);
+              const isToday = c.iso === todayISO();
+              return (
+                <button key={c.iso} onClick={() => { setPick(c.iso); setMode("day"); }}
+                  className="wb-btn rounded-lg text-left"
+                  style={{ minHeight: 58, padding: "3px 4px", cursor: "pointer",
+                    background: isToday ? C.navySoft : "transparent",
+                    border: "1px solid " + (isToday ? "#C6D6E5" : "transparent"),
+                    opacity: c.inMonth ? 1 : 0.35 }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 750, color: isToday ? C.navy : C.ink,
+                    fontVariantNumeric: "tabular-nums" }}>{c.num}</div>
+                  {list.slice(0, 3).map((x) => (
+                    <div key={x.id} className="truncate" style={{ fontSize: 8.5, color: C.ink, lineHeight: 1.35,
+                      borderLeft: "2px solid " + x.color, paddingLeft: 3, marginTop: 1 }}>{x.title}</div>
+                  ))}
+                  {list.length > 3 && <div style={{ fontSize: 8, color: C.faint }}>+{list.length - 3}</div>}
+                </button>
+              );
+            })}
+          </div>
+        </Card>
+      )}
 
-      {/* 주 이동 */}
-      <Card style={{ padding: "10px 11px" }}>
-        <div className="flex items-center justify-between mb-2">
-          <button onClick={() => shift(-1)} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 3 }}>
-            <ChevronLeft size={16} />
-          </button>
-          <span style={{ fontSize: 12.5, fontWeight: 750 }}>
-            {Number(week[0].iso.slice(5, 7))}월 {week[0].num}일 – {Number(week[6].iso.slice(5, 7))}월 {week[6].num}일
-          </span>
-          <button onClick={() => shift(1)} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 3 }}>
-            <ChevronRight size={16} />
-          </button>
-        </div>
-        <div className="grid grid-cols-7" style={{ gap: 3 }}>
-          {week.map((d) => {
-            const on = d.iso === pick;
-            const isToday = d.iso === todayISO();
-            const n = cnt(d.iso);
-            return (
-              <button key={d.iso} onClick={() => setPick(d.iso)} className="wb-btn rounded-lg"
-                style={{ padding: "5px 2px", cursor: "pointer",
-                  background: on ? C.navy : isToday ? C.navySoft : "transparent",
-                  border: "1px solid " + (on ? C.navy : "transparent") }}>
-                <div style={{ fontSize: 9.5, fontWeight: 700, color: on ? "rgba(255,255,255,0.75)" : C.faint }}>{d.wd}</div>
-                <div style={{ fontSize: 14, fontWeight: 800, color: on ? "#fff" : isToday ? C.navy : C.ink,
-                  fontVariantNumeric: "tabular-nums", lineHeight: 1.2 }}>{d.num}</div>
-                <div style={{ height: 4, marginTop: 2 }}>
-                  {n > 0 && <span className="rounded-full" style={{ display: "inline-block", width: 4, height: 4,
-                    background: on ? "#fff" : C.navy }} />}
-                </div>
+      {/* 주간 */}
+      {mode === "week" && (
+        <Card style={{ padding: "8px 9px 10px", overflowX: "auto" }}>
+          <div className="grid" style={{ gridTemplateColumns: "34px repeat(7, minmax(62px, 1fr))", gap: 0 }}>
+            <div />
+            {weekDays.map((d) => (
+              <button key={d.iso} onClick={() => { setPick(d.iso); setMode("day"); }} className="wb-btn"
+                style={{ background: "none", border: "none", cursor: "pointer", padding: "2px 0 5px" }}>
+                <div style={{ fontSize: 9.5, color: C.faint, fontWeight: 700 }}>{d.wd}</div>
+                <div style={{ fontSize: 12.5, fontWeight: 800,
+                  color: d.iso === todayISO() ? C.navy : C.ink, fontVariantNumeric: "tabular-nums" }}>{d.num}</div>
               </button>
-            );
-          })}
-        </div>
-      </Card>
-
-      {/* 종일 */}
-      {allDay.length > 0 && (
-        <Card style={{ padding: "10px 13px" }}>
-          <Label>시간 미정 {allDay.length}</Label>
-          <div style={{ marginTop: 5 }}>
-            {allDay.map((r) => (
-              <button key={r.id} onClick={() => onOpenSub(r.pid, r.sid)} className="wb-btn w-full flex items-center gap-2 text-left"
-                style={{ background: "none", border: "none", padding: "4px 0", cursor: "pointer" }}>
-                <span className="shrink-0 rounded" style={{ width: 3, height: 13, background: r.pColor }} />
-                <span className="flex-1 min-w-0 truncate" style={{ fontSize: 12.5 }}>{r.text}</span>
-                <span className="shrink-0" style={{ fontSize: 10, color: C.faint }}>{shortName(r.pName)}</span>
-              </button>
+            ))}
+          </div>
+          <div className="grid" style={{ gridTemplateColumns: "34px repeat(7, minmax(62px, 1fr))" }}>
+            <div style={{ position: "relative", height: (DAY_TO - DAY_FROM + 1) * HOUR_H }}>
+              {hours.map((h, i) => (
+                <div key={h} style={{ position: "absolute", top: i * HOUR_H - 6, fontSize: 9, color: C.faint,
+                  fontVariantNumeric: "tabular-nums" }}>{String(h).padStart(2, "0")}</div>
+              ))}
+            </div>
+            {weekDays.map((d) => (
+              <div key={d.iso} style={{ borderLeft: "1px solid " + C.rule }}>
+                <DayGrid iso={d.iso} compact />
+              </div>
             ))}
           </div>
         </Card>
       )}
 
-      {/* 시간표 */}
-      <Card style={{ padding: "8px 11px 12px" }}>
-        {timed.length === 0 ? (
-          <div style={{ fontSize: 12.5, color: C.faint, padding: "14px 0", textAlign: "center" }}>
-            이 날 시간이 정해진 일정이 없습니다
-          </div>
-        ) : hours.map((h) => {
-          const list = atHour(h);
-          return (
-            <div key={h} className="flex items-start gap-2" style={{ borderTop: "1px solid " + C.rule, minHeight: 30, padding: "3px 0" }}>
-              <span className="shrink-0" style={{ fontSize: 10, color: C.faint, width: 30, marginTop: 3,
-                fontVariantNumeric: "tabular-nums" }}>
-                {String(h).padStart(2, "0")}:00
-              </span>
-              <div className="flex-1 min-w-0">
-                {list.map((r) => (
-                  <button key={r.id} onClick={() => onOpenSub(r.pid, r.sid)}
-                    className="wb-btn w-full text-left rounded-lg"
-                    style={{ background: r.hl || C.navySoft, border: "none", borderLeft: "3px solid " + r.pColor,
-                      padding: "5px 8px", marginBottom: 3, cursor: "pointer", display: "block" }}>
-                    <div style={{ fontSize: 10, fontWeight: 750, color: C.muted, fontVariantNumeric: "tabular-nums" }}>
-                      {timeText(r)}
-                    </div>
-                    <div className="truncate" style={{ fontSize: 12.5, color: C.ink }}>{r.text}</div>
-                    <div className="truncate" style={{ fontSize: 9.5, color: C.faint }}>{shortName(r.pName)} · {r.sName}</div>
-                  </button>
+      {/* 일간 */}
+      {mode === "day" && (
+        <>
+          {untimed(pick).length > 0 && (
+            <Card style={{ padding: "10px 12px" }}>
+              <Label>시간 미정 {untimed(pick).length}</Label>
+              <div style={{ fontSize: 10, color: C.faint, margin: "3px 0 6px" }}>아래 시간표로 끌어다 놓으면 시각이 정해집니다</div>
+              {untimed(pick).map((x) => (
+                <div key={x.id} draggable
+                  onDragStart={(e) => { e.dataTransfer.setData("text/plan", x.id); e.dataTransfer.effectAllowed = "move"; }}
+                  onClick={() => setSheet({ ...x })}
+                  className="flex items-center gap-2 rounded-lg"
+                  style={{ background: x.hl || "#F4F6F3", borderLeft: "3px solid " + x.color,
+                    padding: "5px 8px", marginBottom: 4, cursor: "grab" }}>
+                  <span className="flex-1 min-w-0 truncate" style={{ fontSize: 12.5 }}>{x.title}</span>
+                  <span className="shrink-0" style={{ fontSize: 9.5, color: C.faint }}>{nameFor(x.pid)}</span>
+                </div>
+              ))}
+            </Card>
+          )}
+
+          <Card style={{ padding: "8px 10px 12px" }}>
+            <div className="flex">
+              <div style={{ position: "relative", width: 34, height: (DAY_TO - DAY_FROM + 1) * HOUR_H, flexShrink: 0 }}>
+                {hours.map((h, i) => (
+                  <div key={h} style={{ position: "absolute", top: i * HOUR_H - 6, fontSize: 10, color: C.faint,
+                    fontVariantNumeric: "tabular-nums" }}>{String(h).padStart(2, "0")}:00</div>
                 ))}
               </div>
+              <div className="flex-1 min-w-0">
+                <DayGrid iso={pick} />
+              </div>
             </div>
-          );
-        })}
-      </Card>
+            <div style={{ fontSize: 10, color: C.faint, marginTop: 6 }}>
+              빈 곳을 누르면 새 일정 · 아래 손잡이를 끌면 시간이 늘어납니다
+            </div>
+          </Card>
+        </>
+      )}
+
+      {sheet && (
+        <PlanSheet init={sheet} projects={data.projects}
+          onClose={() => setSheet(null)}
+          onDelete={sheet.id && sheet.kind === "event" ? () => { onDeleteEvent(sheet.id); setSheet(null); } : null}
+          onSave={(v) => { onSaveEvent(v); setSheet(null); }} />
+      )}
     </div>
   );
 }
@@ -2188,6 +2544,7 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
   const [over, setOver] = useState(null);
   const dragRef = useRef("");
   const [focusId, setFocusId] = useState(null);
+  const [showLate, setShowLate] = useState(false);
   const missing = STARTER.filter((n) => !data.projects.some((p) => p.name === n));
 
   /* 사업 안의 할 일을 보관함 → 세부사업 순으로 */
@@ -2234,15 +2591,34 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
   return (
     <div className="flex flex-col gap-3">
       {overdue > 0 && (
-        <button onClick={() => {}} className="wb-btn text-left" style={{ background: "none", border: "none", padding: 0, cursor: "default" }}>
-          <Card style={{ padding: 11, background: C.sealSoft, borderColor: "#F0D5CF" }}>
-            <div className="flex items-center gap-2">
-              <AlertTriangle size={14} color={C.seal} strokeWidth={2.4} />
-              <span style={{ fontSize: 12.5, fontWeight: 700, color: C.seal }}>마감 지난 할 일 {overdue}건</span>
-              <ChevronRight size={13} color={C.seal} style={{ marginLeft: "auto" }} />
+        <Card style={{ padding: 0, background: C.sealSoft, borderColor: "#F0D5CF" }}>
+          <button onClick={() => setShowLate(!showLate)} className="wb-btn w-full flex items-center gap-2"
+            style={{ background: "none", border: "none", padding: "11px 13px", cursor: "pointer" }}>
+            <AlertTriangle size={14} color={C.seal} strokeWidth={2.4} />
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: C.seal }}>마감 지난 할 일 {overdue}건</span>
+            <ChevronRight size={13} color={C.seal} style={{ marginLeft: "auto",
+              transform: showLate ? "rotate(90deg)" : "none", transition: "transform .15s ease" }} />
+          </button>
+          {showLate && (
+            <div style={{ padding: "0 13px 10px" }}>
+              {all.filter((r) => bucketOf(r) === 0).map((r) => (
+                <div key={r.id} className="flex items-start gap-2" style={{ padding: "5px 0", borderTop: "1px solid #F0D5CF" }}>
+                  <button onClick={() => onToggleTodo(r.pid, r.sid, r.id)}
+                    className="wb-btn flex items-center justify-center rounded shrink-0"
+                    style={{ width: 14, height: 14, marginTop: 2, border: "1.5px solid " + C.seal, background: "transparent", cursor: "pointer" }} />
+                  <span className="flex-1 min-w-0" style={{ fontSize: 12.5, lineHeight: 1.4, wordBreak: "break-word" }}>{r.text}</span>
+                  <span className="shrink-0" style={{ fontSize: 10, fontWeight: 750, color: C.seal, marginTop: 2,
+                    fontVariantNumeric: "tabular-nums" }}>{fmtDateShort(r.due)}</span>
+                  <button onClick={() => onOpen(r.pid)} className="wb-btn shrink-0 rounded"
+                    style={{ background: "rgba(255,255,255,0.7)", border: "none", color: C.ink, fontSize: 9.5,
+                      fontWeight: 750, padding: "2px 6px", marginTop: 1, cursor: "pointer" }}>
+                    {shortName(r.pName)}
+                  </button>
+                </div>
+              ))}
             </div>
-          </Card>
-        </button>
+          )}
+        </Card>
       )}
 
       {/* ── 전체 취합 목록 ── */}
