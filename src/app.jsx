@@ -267,7 +267,7 @@ const VIEW_KEY = "workboard:view";
 const lastView = () => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch (e) { return {}; } };
 const saveView = (v) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch (e) {} };
 
-const APP_VERSION = "2026.09.09e";
+const APP_VERSION = "2026.09.09f";
 const STORAGE_KEY = "workboard:data";
 
 /* 저장소 — 브라우저(localStorage)를 쓰고, Claude 아티팩트 안에서는 그쪽 저장소를 씁니다 */
@@ -1972,7 +1972,6 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
   const [mode, setMode] = useState("day");
   const [pick, setPick] = useState(todayISO());
   const [sheet, setSheet] = useState(null);
-  const [drag, setDrag] = useState(null);      /* 시간 늘리기 */
 
   const shiftDay = (n) => {
     const d = new Date(pick + "T00:00:00");
@@ -2018,22 +2017,43 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
     else onSaveEvent({ ...x, start, end });
   };
 
-  /* 아래 모서리를 끌어 길이 조절 — 창 전체에서 포인터를 따라갑니다 */
-  const dragRef = useRef(null);
+  /* 끌어서 시간 조절 · 자리 이동 — 잡은 지점과 어긋나지 않게 간격을 기억합니다 */
+  const [drag, setDrag] = useState(null);
+
+  const colAt = (cx, cy) => {
+    const el = document.elementFromPoint(cx, cy);
+    return el && el.closest ? el.closest("[data-daycol]") : null;
+  };
+  const minInCol = (col, cy) => {
+    const r = col.getBoundingClientRect();
+    return DAY_FROM * 60 + ((cy - r.top) / HOUR_H) * 60;
+  };
+
   useEffect(() => {
     if (!drag) return;
     const move = (ev) => {
-      const box = dragRef.current;
-      if (!box) return;
-      const r = box.getBoundingClientRect();
-      const m = snap(DAY_FROM * 60 + ((ev.clientY - r.top) / HOUR_H) * 60);
-      const s0 = toMin(drag.x.start);
-      if (m <= s0 + 10) return;
-      setDrag((cur) => (cur ? { ...cur, end: toHM(m) } : cur));
+      const col = colAt(ev.clientX, ev.clientY) || drag.col;
+      if (!col) return;
+      const raw = minInCol(col, ev.clientY);
+      const date = col.getAttribute("data-date") || drag.date;
+
+      setDrag((cur) => {
+        if (!cur) return cur;
+        if (cur.mode === "resize") {
+          const end = snap(raw - cur.grab);
+          if (end <= toMin(cur.x.start) + 10) return cur;
+          return { ...cur, end: toHM(end) };
+        }
+        const start = snap(Math.max(0, raw - cur.grab));
+        return { ...cur, date, start: toHM(start), end: toHM(start + cur.dur) };
+      });
     };
     const up = () => {
       setDrag((cur) => {
-        if (cur && cur.end) applyTime(cur.x, cur.x.start, cur.end);
+        if (cur) {
+          if (cur.mode === "resize" && cur.end) applyTime(cur.x, cur.x.start, cur.end);
+          else if (cur.mode === "move" && cur.start) moveTo(cur.x, cur.date, cur.start, cur.end);
+        }
         return null;
       });
     };
@@ -2045,35 +2065,56 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
     };
-  }, [drag && drag.id]);
+  }, [drag && drag.id, drag && drag.mode]);
 
-  const beginResize = (e, x, colEl) => {
+  /* 아래 손잡이 — 끝나는 시각 조절 */
+  const beginResize = (e, x, col) => {
     e.preventDefault(); e.stopPropagation();
-    dragRef.current = colEl;
-    setDrag({ id: x.id, x, end: x.end || "" });
+    if (!col) return;
+    const cur = toMin(x.end || x.start) + (x.end ? 0 : 60);
+    setDrag({ mode: "resize", id: x.id, x, col, date: x.date,
+      grab: minInCol(col, e.clientY) - cur, end: x.end || "" });
+  };
+
+  /* 블록 몸통 — 통째로 옮기기 */
+  const beginMove = (e, x, col) => {
+    if (e.button != null && e.button !== 0) return;
+    e.preventDefault();
+    if (!col) return;
+    const st = toMin(x.start);
+    const dur = x.end ? Math.max(20, toMin(x.end) - st) : 60;
+    setDrag({ mode: "move", id: x.id, x, col, date: x.date, dur,
+      grab: minInCol(col, e.clientY) - st, start: x.start, end: x.end || toHM(st + dur), moved: false });
   };
 
   const hours = [];
   for (let h = DAY_FROM; h <= DAY_TO; h++) hours.push(h);
 
   const Block = ({ x, iso, compact }) => {
-    const showEnd = drag && drag.id === x.id && drag.end ? drag.end : x.end;
+    const on = drag && drag.id === x.id;
+    const showStart = on && drag.mode === "move" ? drag.start : x.start;
+    const showEnd = on ? (drag.mode === "move" ? drag.end : drag.end || x.end) : x.end;
+    const hideHere = on && drag.mode === "move" && drag.date !== iso;
+    if (hideHere) return null;
     return (
-      <div className="rounded-lg" draggable
-        onDragStart={(ev) => {
+      <div className="rounded-lg"
+        onPointerDown={(e) => beginMove(e, x, e.currentTarget.closest("[data-daycol]"))}
+        onClick={(ev) => {
           ev.stopPropagation();
-          try { ev.dataTransfer.setData("text/plan", x.id); } catch (err) {}
-          ev.dataTransfer.effectAllowed = "move";
+          if (drag) return;
+          setSheet({ ...x, kind: x.kind });
         }}
         style={{
-        position: "absolute", left: 2, right: 3, top: topOf(x.start), height: heightOf(x.start, showEnd),
-        background: x.hl || (x.kind === "event" ? "#EEF1F5" : C.navySoft),
-        borderLeft: "3px solid " + x.color, overflow: "hidden", cursor: "pointer",
-        boxShadow: "0 1px 2px rgba(26,33,30,0.06)" }}
-        onClick={(ev) => { ev.stopPropagation(); setSheet({ ...x, kind: x.kind }); }}>
+          position: "absolute", left: 2, right: 3, top: topOf(showStart), height: heightOf(showStart, showEnd),
+          background: x.hl || (x.kind === "event" ? "#EEF1F5" : C.navySoft),
+          borderLeft: "3px solid " + x.color, overflow: "hidden",
+          cursor: on ? "grabbing" : "grab", touchAction: "none",
+          opacity: on ? 0.85 : 1,
+          boxShadow: on ? "0 6px 16px rgba(26,33,30,0.18)" : "0 1px 2px rgba(26,33,30,0.06)",
+          zIndex: on ? 8 : 2 }}>
         <div style={{ padding: compact ? "2px 4px" : "3px 7px" }}>
           <div style={{ fontSize: compact ? 8.5 : 10, fontWeight: 750, color: C.muted, fontVariantNumeric: "tabular-nums" }}>
-            {x.start}{showEnd ? "–" + showEnd : ""}
+            {showStart}{showEnd ? "–" + showEnd : ""}
           </div>
           <div className="truncate" style={{ fontSize: compact ? 9.5 : 12, fontWeight: 650, color: C.ink }}>{x.title}</div>
           {!compact && (
@@ -2083,15 +2124,15 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
           )}
         </div>
         <div onPointerDown={(e) => beginResize(e, x, e.currentTarget.closest("[data-daycol]"))}
-          style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 10, cursor: "ns-resize", touchAction: "none" }}>
-          <span style={{ display: "block", width: 26, height: 3, borderRadius: 3, background: "rgba(26,33,30,0.18)", margin: "2px auto" }} />
+          style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 12, cursor: "ns-resize", touchAction: "none" }}>
+          <span style={{ display: "block", width: 26, height: 3, borderRadius: 3, background: "rgba(26,33,30,0.22)", margin: "3px auto" }} />
         </div>
       </div>
     );
   };
 
   const DayGrid = ({ iso, compact }) => (
-    <div data-daycol style={{ position: "relative", height: (DAY_TO - DAY_FROM + 1) * HOUR_H }}
+    <div data-daycol data-date={iso} style={{ position: "relative", height: (DAY_TO - DAY_FROM + 1) * HOUR_H }}
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
@@ -2110,6 +2151,9 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
             borderTop: "1px solid " + C.rule, cursor: "pointer" }} />
       ))}
       {timed(iso).map((x) => <Block key={x.id} x={x} iso={iso} compact={compact} />)}
+      {drag && drag.mode === "move" && drag.date === iso && drag.x.date !== iso && (
+        <Block key={"ghost"} x={drag.x} iso={iso} compact={compact} />
+      )}
       {iso === todayISO() && nowIn && (
         <div style={{ position: "absolute", left: 0, right: 0, top: nowTop, height: 0, zIndex: 6, pointerEvents: "none" }}>
           <span style={{ position: "absolute", left: -4, top: -4, width: 8, height: 8, borderRadius: 99, background: C.seal }} />
@@ -2319,7 +2363,7 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
               </div>
             </div>
             <div style={{ fontSize: 10, color: C.faint, marginTop: 6 }}>
-              빈 곳을 누르면 새 일정 · 아래 손잡이를 끌면 시간 조절 · 블록을 끌면 자리 이동
+              빈 곳을 누르면 새 일정 · 블록을 끌면 자리 이동 · 아래 손잡이를 끌면 시간 조절
             </div>
           </Card>
         </>
