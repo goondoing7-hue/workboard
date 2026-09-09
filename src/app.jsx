@@ -267,7 +267,7 @@ const VIEW_KEY = "workboard:view";
 const lastView = () => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch (e) { return {}; } };
 const saveView = (v) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch (e) {} };
 
-const APP_VERSION = "2026.09.10c";
+const APP_VERSION = "2026.09.10e";
 /* ============================================================
    잠금 — 비밀번호로 내용 자체를 잠급니다.
    화면만 가리는 게 아니라 저장되는 내용이 암호문이 됩니다.
@@ -342,6 +342,8 @@ const splitList = (text) => {
 const isTouch = () => typeof window !== "undefined" && window.matchMedia
   && window.matchMedia("(pointer: coarse)").matches;
 const editTrigger = (open) => (isTouch() ? { onClick: open } : { onDoubleClick: open });
+
+const toHM2 = (m) => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
@@ -633,6 +635,67 @@ const Handle = ({ props }) => (
 /* ------------------------------------------------------------------
    마감 편집
 ------------------------------------------------------------------- */
+/* 시·분을 한 번에 고르는 시간 선택기 */
+const TIME_STEP = 5;
+const TIME_LIST = (() => {
+  const out = [];
+  for (let m = 0; m < 24 * 60; m += TIME_STEP) out.push(toHM2(m));
+  return out;
+})();
+
+function TimePick({ value, onChange, style, disabled }) {
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef(null);
+  const listRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const away = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("pointerdown", away);
+    return () => document.removeEventListener("pointerdown", away);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !listRef.current) return;
+    const i = TIME_LIST.indexOf(value);
+    const at = i >= 0 ? i : Math.floor(9 * 60 / TIME_STEP);
+    listRef.current.scrollTop = Math.max(0, at * 30 - 90);
+  }, [open, value]);
+
+  return (
+    <span ref={boxRef} style={{ position: "relative", display: "inline-block", ...(style || {}) }}>
+      <button onClick={() => !disabled && setOpen(!open)} disabled={disabled}
+        className="wb-btn w-full text-left rounded-lg"
+        style={{ padding: "9px 11px", fontSize: 13.5, fontWeight: 650,
+          border: "1px solid " + (open ? C.navy : C.rule),
+          background: disabled ? "#F1F3F0" : C.surface, color: disabled ? C.faint : C.ink,
+          cursor: disabled ? "default" : "pointer", fontVariantNumeric: "tabular-nums" }}>
+        {value || "--:--"}
+      </button>
+      {open && (
+        <div ref={listRef} className="rounded-lg wb-fade"
+          style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, minWidth: 104, maxHeight: 216,
+            overflowY: "auto", background: C.surface, border: "1px solid " + C.rule,
+            boxShadow: "0 8px 24px rgba(26,33,30,0.16)", zIndex: 40, padding: 4 }}>
+          {TIME_LIST.map((t) => {
+            const on = t === value;
+            return (
+              <button key={t} onClick={() => { onChange(t); setOpen(false); }}
+                className="wb-btn w-full text-left rounded"
+                style={{ display: "block", height: 30, lineHeight: "30px", padding: "0 10px",
+                  fontSize: 13, fontWeight: on ? 800 : 600, cursor: "pointer", border: "none",
+                  background: on ? C.navySoft : "transparent", color: on ? C.navy : C.ink,
+                  fontVariantNumeric: "tabular-nums" }}>
+                {t}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </span>
+  );
+}
+
 function DueEditor({ value, onChange, onClose }) {
   const { due = "", dueTime = "", dueEnd = "" } = value;
   const mode = dueEnd ? "range" : dueTime ? "start" : "none";
@@ -671,13 +734,11 @@ function DueEditor({ value, onChange, onClose }) {
       </div>
       {mode !== "none" && (
         <div className="flex items-center gap-2 mt-2.5">
-          <input type="time" value={dueTime} onChange={(e) => onChange({ ...value, dueTime: e.target.value })} className="flex-1 rounded-lg"
-            style={{ padding: "8px 10px", fontSize: 13.5, border: "1px solid " + C.rule, background: C.surface, color: C.ink, minWidth: 0 }} />
+          <TimePick value={dueTime} onChange={(t) => onChange({ ...value, dueTime: t })} style={{ flex: 1 }} />
           {mode === "range" && (
             <>
               <span style={{ color: C.faint }}>–</span>
-              <input type="time" value={dueEnd} onChange={(e) => onChange({ ...value, dueEnd: e.target.value })} className="flex-1 rounded-lg"
-                style={{ padding: "8px 10px", fontSize: 13.5, border: "1px solid " + C.rule, background: C.surface, color: C.ink, minWidth: 0 }} />
+              <TimePick value={dueEnd} onChange={(t) => onChange({ ...value, dueEnd: t })} style={{ flex: 1 }} />
             </>
           )}
         </div>
@@ -1105,7 +1166,7 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
     return { id: e.id, kind: "event", text: e.title, due: e.date, dueTime: e.start || "", dueEnd: e.end || "",
       place: e.place, pid: e.pid || "", sName: "",
       pName: i >= 0 ? data.projects[i].name : "센터 일정",
-      pColor: i >= 0 ? colorOf(data.projects[i], i) : C.navy };
+      pColor: i >= 0 ? colorOf(data.projects[i], i) : "#5A6673" };
   });
   const counselRows = (data.resv || []).map((r) => {
     const c = (data.clients || []).find((x) => x.id === r.clientId);
@@ -1969,6 +2030,10 @@ export default function WorkBoard() {
           {tab === "plan" && (
             <PlanView data={data} rows={homeRows} events={data.events || []} onOpenSub={openSubPage}
               onGoCounsel={() => setTab("counsel")}
+              onOpenProject={(pid) => { setTab("projects"); setOpenProject(pid); setOpenSub(null); }}
+              onSaveResv={(v) => setData((d) => ({ ...d,
+                resv: (d.resv || []).map((r) => (r.id === v.id ? { ...r, ...v, kind: undefined } : r)) }))}
+              onDeleteResv={(id) => setData((d) => ({ ...d, resv: (d.resv || []).filter((r) => r.id !== id) }))}
               hidden={data.planHidden || []}
               onToggleHidden={(pid) => setData((d) => {
                 const h = d.planHidden || [];
@@ -2562,14 +2627,14 @@ function ResvSheet({ init, clients, types, onAddType, onSave, onDelete, onClose 
             <Label>시작</Label>
             <div className="flex items-center gap-2" style={{ marginTop: 5 }}>
               <input type="date" value={v.date} onChange={(e) => setV({ ...v, date: e.target.value })} style={{ ...inp, flex: 1 }} />
-              <input type="time" value={v.start} onChange={(e) => setV({ ...v, start: e.target.value })} style={{ ...inp, width: 118 }} />
+              <TimePick value={v.start} onChange={(t) => setV({ ...v, start: t })} style={{ width: 118 }} />
             </div>
           </div>
           <div style={{ marginTop: 8 }}>
             <Label>종료</Label>
             <div className="flex items-center gap-2" style={{ marginTop: 5 }}>
               <input type="date" value={v.date} disabled style={{ ...inp, flex: 1, background: "#F1F3F0", color: C.faint }} />
-              <input type="time" value={v.end} onChange={(e) => setV({ ...v, end: e.target.value })} style={{ ...inp, width: 118 }} />
+              <TimePick value={v.end} onChange={(t) => setV({ ...v, end: t })} style={{ width: 118 }} />
             </div>
           </div>
 
@@ -2920,13 +2985,14 @@ function CounselView({ data, onSaveClient, onDeleteClient, onSaveResv, onDeleteR
 const HOUR_H = 46;          /* 한 시간의 높이(px) */
 const DAY_FROM = 7, DAY_TO = 21;
 const CENTER = "__center__";
+const CENTER_COLOR = "#5A6673";   /* 사업 색과 겹치지 않는 회청색 */
 
 const toMin = (t) => (t ? Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5)) : null);
 const toHM = (m) => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
 const snap = (m) => Math.max(0, Math.min(24 * 60 - 10, Math.round(m / 10) * 10));
 
 /* 일정 만들기 · 고치기 */
-function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoSub }) {
+function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
   const dismiss = useDismiss(onClose);
   const [kind, setKind] = useState(init.kind || "event");
   const [title, setTitle] = useState(init.title || "");
@@ -2953,7 +3019,11 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoSub }) {
 
   const save = () => {
     const t = title.trim();
-    if (!t) { onClose(); return; }
+    if (!t && kind !== "counsel") { onClose(); return; }
+    if (kind === "counsel") {
+      onSave({ id: init.id, kind: "counsel", date, start: noTime ? "" : start, end: noTime ? "" : end });
+      return;
+    }
     onSave({
       id: init.id, kind, title: t, date,
       start: noTime ? "" : start, end: noTime ? "" : end,
@@ -2977,9 +3047,17 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoSub }) {
         </div>
 
         <div style={{ padding: "0 16px 16px" }}>
+          {kind === "counsel" ? (
+            <div style={{ marginBottom: 10 }}>
+              <span className="rounded" style={{ fontSize: 9.5, fontWeight: 800, padding: "2px 6px",
+                background: C.greenSoft, color: C.green }}>상담</span>
+              <div style={{ fontSize: 17, fontWeight: 750, marginTop: 6 }}>{title}</div>
+            </div>
+          ) : (
           <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="제목 추가" autoFocus
             className="w-full" style={{ fontSize: 17, fontWeight: 700, color: C.ink, background: "transparent",
               border: "none", borderBottom: "2px solid " + C.navy, outline: "none", padding: "6px 2px", marginBottom: 10 }} />
+          )}
 
 
           <Field icon={Clock}>
@@ -2990,13 +3068,14 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoSub }) {
             </label>
             {!noTime && (
               <div className="flex items-center gap-2 mt-2">
-                <input type="time" value={start} onChange={(e) => setStart(e.target.value)} style={{ ...inp, flex: 1 }} />
+                <TimePick value={start} onChange={setStart} style={{ flex: 1 }} />
                 <span style={{ color: C.faint }}>–</span>
-                <input type="time" value={end} onChange={(e) => setEnd(e.target.value)} style={{ ...inp, flex: 1 }} />
+                <TimePick value={end} onChange={setEnd} style={{ flex: 1 }} />
               </div>
             )}
           </Field>
 
+          {kind !== "counsel" && (
           <Field icon={FolderClosed}>
             <div className="flex items-center gap-1.5 flex-wrap">
               <button onClick={() => { setPid(""); setSid(""); }} className="wb-btn rounded-full"
@@ -3039,6 +3118,13 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoSub }) {
               </div>
             )}
           </Field>
+          )}
+
+          {kind === "counsel" && init.memo && (
+            <Field icon={AlignLeft}>
+              <div style={{ fontSize: 13, lineHeight: 1.6, color: C.ink, whiteSpace: "pre-wrap" }}>{init.memo}</div>
+            </Field>
+          )}
 
           {kind === "event" && (
             <>
@@ -3053,11 +3139,16 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoSub }) {
             </>
           )}
 
-          {init.id && init.kind === "todo" && init.sid && onGoSub && (
-            <button onClick={() => onGoSub(init.pid, init.sid)} className="wb-btn w-full flex items-center gap-2 rounded-lg mt-3"
-              style={{ background: init.hl || C.navySoft, border: "1px solid " + C.rule,
-                borderLeft: "4px solid " + (init.color || C.navy), padding: "9px 11px", cursor: "pointer" }}>
-              <span style={{ fontSize: 12.5, fontWeight: 700, color: C.ink }}>{init.sName || "세부사업"}</span>
+          {init.id && onGoLink && (init.kind !== "event" || init.pid) && (
+            <button onClick={() => onGoLink(init)} className="wb-btn w-full flex items-center gap-2 rounded-lg mt-3"
+              style={{ background: init.hl || (init.kind === "counsel" ? C.greenSoft : C.navySoft),
+                border: "1px solid " + C.rule, borderLeft: "4px solid " + (init.color || C.navy),
+                padding: "9px 11px", cursor: "pointer" }}>
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: C.ink }}>
+                {init.kind === "counsel" ? "상담에서 열기"
+                  : init.kind === "event" ? "사업에서 열기"
+                  : (init.sName || "세부사업")}
+              </span>
               <span style={{ fontSize: 11, color: C.muted, marginLeft: "auto" }}>열기</span>
               <ChevronRight size={14} color={C.muted} />
             </button>
@@ -3078,7 +3169,7 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoSub }) {
   );
 }
 
-function PlanView({ data, rows, events, onOpenSub, onGoCounsel, hidden, onToggleHidden, onSaveEvent, onDeleteEvent, onSetTodoTime, onDeleteTodo }) {
+function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, hidden, onToggleHidden, onSaveEvent, onDeleteEvent, onSetTodoTime, onDeleteTodo, onSaveResv, onDeleteResv }) {
   const [tick, setTick] = useState(0);
   useEffect(() => { const iv = setInterval(() => setTick((n) => n + 1), 60000); return () => clearInterval(iv); }, []);
   const nowM = nowMin();
@@ -3099,7 +3190,7 @@ function PlanView({ data, rows, events, onOpenSub, onGoCounsel, hidden, onToggle
 
   /* 할 일과 일정을 한 줄기로 */
   const projIdx = (pid) => data.projects.findIndex((p) => p.id === pid);
-  const colorFor = (pid) => (pid ? colorOf(data.projects[projIdx(pid)] || {}, Math.max(0, projIdx(pid))) : C.navy);
+  const colorFor = (pid) => (pid ? colorOf(data.projects[projIdx(pid)] || {}, Math.max(0, projIdx(pid))) : CENTER_COLOR);
   const nameFor = (pid) => (pid ? shortName((data.projects[projIdx(pid)] || {}).name) : "센터");
 
   const all = [
@@ -3116,7 +3207,7 @@ function PlanView({ data, rows, events, onOpenSub, onGoCounsel, hidden, onToggle
       const c = (data.clients || []).find((x) => x.id === r.clientId);
       return { id: r.id, kind: "counsel", title: (c ? c.name : "상담") + " · " + r.type,
         date: r.date, start: r.start || "", end: r.end || "", pid: "", sid: "",
-        place: "", memo: r.memo, color: C.green, hl: C.greenSoft, readOnly: true };
+        place: "", memo: r.memo, clientId: r.clientId, rtype: r.type, color: C.green, hl: C.greenSoft };
     }),
   ].filter((x) => x.date && !hidden.includes(x.pid || CENTER));
 
@@ -3131,11 +3222,13 @@ function PlanView({ data, rows, events, onOpenSub, onGoCounsel, hidden, onToggle
   /* 날짜와 시각을 함께 옮깁니다 */
   const moveTo = (x, date, start, end) => {
     if (x.kind === "todo") onSetTodoTime(x.pid, x.sid, x.id, { due: date, dueTime: start, dueEnd: end });
+    else if (x.kind === "counsel") onSaveResv({ id: x.id, date, start, end });
     else onSaveEvent({ ...x, date, start, end });
   };
 
   const applyTime = (x, start, end) => {
     if (x.kind === "todo") onSetTodoTime(x.pid, x.sid, x.id, { dueTime: start, dueEnd: end });
+    else if (x.kind === "counsel") onSaveResv({ id: x.id, start, end });
     else onSaveEvent({ ...x, start, end });
   };
 
@@ -3227,11 +3320,10 @@ function PlanView({ data, rows, events, onOpenSub, onGoCounsel, hidden, onToggle
     if (hideHere) return null;
     return (
       <div className="rounded-lg"
-        onPointerDown={(e) => { if (x.readOnly) return; beginMove(e, x, e.currentTarget.closest("[data-daycol]")); }}
+        onPointerDown={(e) => beginMove(e, x, e.currentTarget.closest("[data-daycol]"))}
         onClick={(ev) => {
           ev.stopPropagation();
           if (drag) return;
-          if (x.kind === "counsel") { onGoCounsel && onGoCounsel(); return; }
           setSheet({ ...x, kind: x.kind });
         }}
         style={{
@@ -3243,8 +3335,16 @@ function PlanView({ data, rows, events, onOpenSub, onGoCounsel, hidden, onToggle
           boxShadow: on ? "0 6px 16px rgba(26,33,30,0.18)" : "0 1px 2px rgba(26,33,30,0.06)",
           zIndex: on ? 8 : 2 }}>
         <div style={{ padding: compact ? "2px 4px" : "3px 7px" }}>
-          <div style={{ fontSize: compact ? 8.5 : 10, fontWeight: 750, color: C.muted, fontVariantNumeric: "tabular-nums" }}>
-            {showStart}{showEnd ? "–" + showEnd : ""}
+          <div className="flex items-baseline gap-1.5 min-w-0">
+            <span style={{ fontSize: compact ? 8.5 : 10, fontWeight: 800, color: C.muted,
+              fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
+              {showStart}{showEnd ? "–" + showEnd : ""}
+            </span>
+            {!compact && (x.sName || x.place) && (
+              <span className="truncate" style={{ fontSize: 9.5, fontWeight: 400, color: C.faint }}>
+                {x.sName || x.place}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1">
             {!compact && (
@@ -3255,11 +3355,7 @@ function PlanView({ data, rows, events, onOpenSub, onGoCounsel, hidden, onToggle
             )}
             <span className="truncate" style={{ fontSize: compact ? 9.5 : 12, fontWeight: 650, color: C.ink }}>{x.title}</span>
           </div>
-          {!compact && (
-            <div className="truncate" style={{ fontSize: 9.5, color: C.faint }}>
-              {nameFor(x.pid)}{x.sName ? " · " + x.sName : ""}{x.place ? " · " + x.place : ""}
-            </div>
-          )}
+
         </div>
         <div onPointerDown={(e) => beginResize(e, x, e.currentTarget.closest("[data-daycol]"), "top")}
           style={{ position: "absolute", left: 0, right: 0, top: 0, height: 9, cursor: "ns-resize", touchAction: "none" }} />
@@ -3373,7 +3469,7 @@ function PlanView({ data, rows, events, onOpenSub, onGoCounsel, hidden, onToggle
       <Card style={{ padding: "10px 12px" }}>
         <Label>표시할 일정</Label>
         <div className="flex items-center gap-1.5 flex-wrap mt-2">
-          {[{ id: CENTER, name: "센터 일정", color: C.navy }, ...data.projects.map((p, i) => ({ id: p.id, name: p.name, color: colorOf(p, i) }))]
+          {[{ id: CENTER, name: "센터 일정", color: CENTER_COLOR }, ...data.projects.map((p, i) => ({ id: p.id, name: p.name, color: colorOf(p, i) }))]
             .map((o) => {
               const off = hidden.includes(o.id);
               return (
@@ -3513,14 +3609,20 @@ function PlanView({ data, rows, events, onOpenSub, onGoCounsel, hidden, onToggle
       {sheet && (
         <PlanSheet init={sheet} projects={data.projects}
           onClose={() => setSheet(null)}
-          onGoSub={(pid, sid) => { setSheet(null); onOpenSub(pid, sid); }}
+          onGoLink={(x) => {
+            setSheet(null);
+            if (x.kind === "counsel") onGoCounsel && onGoCounsel();
+            else if (x.kind === "event") onOpenProject && onOpenProject(x.pid);
+            else onOpenSub(x.pid, x.sid);
+          }}
           onDelete={sheet.id
             ? () => {
                 if (sheet.kind === "event") onDeleteEvent(sheet.id);
+                else if (sheet.kind === "counsel") onDeleteResv(sheet.id);
                 else onDeleteTodo(sheet.pid, sheet.sid, sheet.id);
                 setSheet(null);
               } : null}
-          onSave={(v) => { onSaveEvent(v); setSheet(null); }} />
+          onSave={(v) => { if (v.kind === "counsel") onSaveResv(v); else onSaveEvent(v); setSheet(null); }} />
       )}
     </div>
   );
