@@ -267,7 +267,7 @@ const VIEW_KEY = "workboard:view";
 const lastView = () => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch (e) { return {}; } };
 const saveView = (v) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch (e) {} };
 
-const APP_VERSION = "2026.09.09d";
+const APP_VERSION = "2026.09.09e";
 const STORAGE_KEY = "workboard:data";
 
 /* 저장소 — 브라우저(localStorage)를 쓰고, Claude 아티팩트 안에서는 그쪽 저장소를 씁니다 */
@@ -817,7 +817,7 @@ const DocPanel = ({ sub, onToggleDoc, onSetDocMode }) => {
 /* ------------------------------------------------------------------
    메인보드
 ------------------------------------------------------------------- */
-function HomeView({ data, rows, onDone, onEditTodo, onOpenSub, onOpenProject, onGo, onAddMemo }) {
+function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenProject, onGo, onAddMemo }) {
   const [now, setNow] = useState(new Date());
   const [showMissed, setShowMissed] = useState(false);
   const [editNow, setEditNow] = useState(false);
@@ -849,7 +849,16 @@ function HomeView({ data, rows, onDone, onEditTodo, onOpenSub, onOpenProject, on
     }),
   })).filter((x) => x.subs.length > 0);
 
-  /* 오늘부터 앞으로 5일치 일정 */
+  /* 오늘부터 앞으로 5일치 — 업무와 일정을 함께 */
+  const planRows = (events || []).map((e) => {
+    const i = data.projects.findIndex((p) => p.id === e.pid);
+    return { id: e.id, kind: "event", text: e.title, due: e.date, dueTime: e.start || "", dueEnd: e.end || "",
+      place: e.place, pid: e.pid || "", sName: "",
+      pName: i >= 0 ? data.projects[i].name : "센터 일정",
+      pColor: i >= 0 ? colorOf(data.projects[i], i) : C.navy };
+  });
+  const merged = [...rows.map((r) => ({ ...r, kind: "todo" })), ...planRows];
+
   const agenda = (() => {
     const out = [];
     for (let k = 0; k < 6; k++) {
@@ -857,7 +866,7 @@ function HomeView({ data, rows, onDone, onEditTodo, onOpenSub, onOpenProject, on
       d.setDate(d.getDate() + k);
       d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
       const iso = d.toISOString().slice(0, 10);
-      const items = rows.filter((r) => r.due === iso && !(k === 0 && isPast(r)))
+      const items = merged.filter((r) => r.due === iso && !(k === 0 && isPast(r)))
         .sort((a, b) => (a.dueTime || "99:99").localeCompare(b.dueTime || "99:99"));
       if (!items.length) continue;
       const wd = ["일", "월", "화", "수", "목", "금", "토"][new Date(iso + "T00:00:00").getDay()];
@@ -1030,24 +1039,35 @@ function HomeView({ data, rows, onDone, onEditTodo, onOpenSub, onOpenProject, on
             <div style={{ fontSize: 12.5, fontWeight: 800, color: C.ink, padding: "7px 0 3px" }}>
               {g.label}
             </div>
-            {g.items.map((r) => (
-              <button key={r.id} onClick={() => onOpenSub(r.pid, r.sid)}
-                className="wb-btn w-full flex items-start gap-2 text-left"
-                style={{ background: "none", border: "none", borderTop: "1px solid " + C.rule,
-                  padding: "7px 0", cursor: "pointer" }}>
-                <span className="shrink-0 rounded" style={{ width: 3, height: 15, background: r.pColor, marginTop: 2 }} />
-                {r.dueTime && (
-                  <span className="shrink-0" style={{ fontSize: 12, fontWeight: 750, color: C.ink,
-                    fontVariantNumeric: "tabular-nums", minWidth: 38 }}>{r.dueTime}</span>
-                )}
-                <span className="flex-1 min-w-0">
-                  <span className="block truncate" style={{ fontSize: 12.5, color: C.ink }}>{r.text}</span>
-                  <span className="block truncate" style={{ fontSize: 10, color: C.faint }}>
-                    {shortName(r.pName)} · {r.sName}
+            {g.items.map((r) => {
+              const ev = r.kind === "event";
+              return (
+                <button key={r.id} onClick={() => (ev ? onGo("plan") : onOpenSub(r.pid, r.sid))}
+                  className="wb-btn w-full flex items-start gap-2 text-left"
+                  style={{ background: ev ? "rgba(36,72,107,0.045)" : "none", border: "none",
+                    borderTop: "1px solid " + C.rule, borderRadius: ev ? 8 : 0,
+                    padding: ev ? "7px 8px" : "7px 0", cursor: "pointer" }}>
+                  <span className="shrink-0 rounded" style={{ width: ev ? 5 : 3, height: 15,
+                    background: r.pColor, marginTop: 2 }} />
+                  {r.dueTime && (
+                    <span className="shrink-0" style={{ fontSize: 12, fontWeight: 750, color: C.ink,
+                      fontVariantNumeric: "tabular-nums", minWidth: 38 }}>{r.dueTime}</span>
+                  )}
+                  <span className="flex-1 min-w-0">
+                    <span className="flex items-center gap-1.5">
+                      {ev && <CalendarDays size={11} color={r.pColor} strokeWidth={2.5} className="shrink-0" />}
+                      <span className="truncate" style={{ fontSize: 12.5, color: C.ink,
+                        fontWeight: ev ? 700 : 400 }}>{r.text}</span>
+                    </span>
+                    <span className="block truncate" style={{ fontSize: 10, color: C.faint }}>
+                      {ev
+                        ? (r.pName === "센터 일정" ? "센터 일정" : shortName(r.pName) + " 일정") + (r.place ? " · " + r.place : "")
+                        : shortName(r.pName) + " · " + r.sName}
+                    </span>
                   </span>
-                </span>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
         ))}
       </Card>
@@ -1440,7 +1460,7 @@ export default function WorkBoard() {
     : sub ? { title: sub.name, sup: project.name, back: () => setOpenSub(null), color: colorOf(project, projectIdx) }
     : project ? { title: project.name, sup: "사업", back: () => setOpenProject(null), color: colorOf(project, projectIdx) } : null;
 
-  const titleOf = { home: "메인보드", projects: "사업 관리", plan: "일정", notes: "메모함" }[tab] || "메인보드";
+  const titleOf = { home: "메인보드", projects: "업무 관리", plan: "일정", notes: "메모함" }[tab] || "메인보드";
 
   return (
     <div style={{ fontFamily: FONT, background: C.bg, minHeight: "100vh", color: C.ink }}>
@@ -1547,7 +1567,7 @@ export default function WorkBoard() {
           )}
 
           {tab === "home" && (
-            <HomeView data={data} rows={homeRows} onDone={doneRow}
+            <HomeView data={data} rows={homeRows} events={data.events || []} onDone={doneRow}
               onEditTodo={(pid, sid, tid, text) => patchTodo(pid, sid, tid, { text })}
               onOpenSub={openSubPage}
               onOpenProject={(pid) => { setTab("projects"); setOpenProject(pid); setOpenSub(null); }}
@@ -1717,7 +1737,7 @@ export default function WorkBoard() {
       <div className="fixed bottom-0 left-0 right-0 z-40" style={{ background: "rgba(237,239,236,0.94)", backdropFilter: "blur(8px)", borderTop: "1px solid " + C.rule }}>
         <div className="flex" style={{ maxWidth: 760, margin: "0 auto", padding: "8px 8px 14px" }}>
           {[{ k: "home", t: "메인", i: LayoutGrid, badge: 0 },
-            { k: "projects", t: "사업", i: FolderClosed, badge: 0 },
+            { k: "projects", t: "업무", i: FolderClosed, badge: 0 },
             { k: "plan", t: "일정", i: CalendarDays, badge: 0 },
             { k: "notes", t: "메모함", i: StickyNote, badge: 0 }].map((x) => {
             const on = tab === x.k;
