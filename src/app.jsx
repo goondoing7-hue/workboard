@@ -5,7 +5,7 @@ import {
   Pencil, Wallet, WalletMinimal, ListChecks, Download, Upload,
   CornerDownLeft, GripVertical, ArrowUpDown, RotateCcw, LayoutGrid,
   Stamp, Sunrise, CircleDot, Palette, Cloud, CloudOff, RefreshCw, Copy, ShieldCheck, HardDriveDownload,
-  LogIn, HardDrive, Database, StickyNote, Pin, FileX, CornerDownRight, Bell, Globe, Youtube, MapPin, AlignLeft,
+  LogIn, HardDrive, Database, StickyNote, Pin, FileX, CornerDownRight, Bell, Globe, Youtube, MapPin, AlignLeft, Lock, Unlock, Users, Paperclip, Phone,
   Star, Bold, Italic, Underline, Baseline, ImagePlus, MoreVertical, CheckSquare
 } from "lucide-react";
 
@@ -267,7 +267,40 @@ const VIEW_KEY = "workboard:view";
 const lastView = () => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch (e) { return {}; } };
 const saveView = (v) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch (e) {} };
 
-const APP_VERSION = "2026.09.09f";
+const APP_VERSION = "2026.09.10c";
+/* ============================================================
+   잠금 — 비밀번호로 내용 자체를 잠급니다.
+   화면만 가리는 게 아니라 저장되는 내용이 암호문이 됩니다.
+   ============================================================ */
+const LOCK_KEY = "workboard:lock";
+const B64 = {
+  to: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))),
+  from: (str) => Uint8Array.from(atob(str), (c) => c.charCodeAt(0)),
+};
+const cryptoOK = () => typeof crypto !== "undefined" && crypto.subtle;
+
+async function deriveKey(pw, saltB64) {
+  const salt = B64.from(saltB64);
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" },
+    base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function sealText(key, text) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(text));
+  return JSON.stringify({ enc: 1, iv: B64.to(iv), ct: B64.to(ct) });
+}
+async function openText(key, raw) {
+  const o = JSON.parse(raw);
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: B64.from(o.iv) }, key, B64.from(o.ct));
+  return new TextDecoder().decode(pt);
+}
+const isSealed = (raw) => {
+  try { const o = JSON.parse(raw); return o && o.enc === 1 && o.iv && o.ct; } catch (e) { return false; }
+};
+const lockCfg = () => { try { return JSON.parse(localStorage.getItem(LOCK_KEY)) || null; } catch (e) { return null; } };
+
 const STORAGE_KEY = "workboard:data";
 
 /* 저장소 — 브라우저(localStorage)를 쓰고, Claude 아티팩트 안에서는 그쪽 저장소를 씁니다 */
@@ -682,9 +715,151 @@ const PathTag = ({ r, onClick }) => (
 /* ------------------------------------------------------------------
    할 일 한 줄
 ------------------------------------------------------------------- */
+/* ------------------------------------------------------------------
+   하위 목록 — 드래그 정렬, Ctrl 조작
+------------------------------------------------------------------- */
+function SubItem({ item, handle, onToggle, onEdit, onDelete, onAddAfter, onMove, autoEdit }) {
+  const [editing, setEditing] = useState(!!autoEdit);
+  const [draft, setDraft] = useState(item.text);
+
+  const commit = () => {
+    const t = draft.trim();
+    if (t && t !== item.text) onEdit(t);
+    if (!t) onDelete();
+    return t;
+  };
+  const key = (e) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      e.preventDefault(); commit(); onMove(e.key === "ArrowUp" ? -1 : 1); return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const t = commit();
+      if (mod && t) onAddAfter();
+      else setEditing(false);
+      return;
+    }
+    if (e.key === "Escape") { setDraft(item.text); setEditing(false); }
+  };
+
+  return (
+    <div className="flex items-start gap-1.5" style={{ padding: "4px 0" }}>
+      {handle && (
+        <button {...handle} className="wb-btn shrink-0 flex items-center justify-center"
+          style={{ ...handle.style, background: "none", border: "none", color: "#C9CFC7", padding: 0, width: 14, marginTop: 3 }}
+          aria-label="하위 순서 바꾸기">
+          <GripVertical size={13} strokeWidth={2} />
+        </button>
+      )}
+      <button onClick={onToggle} className="wb-btn flex items-center justify-center rounded shrink-0"
+        style={{ width: 17, height: 17, marginTop: 2, border: `1.6px solid ${item.done ? C.green : "#C6CCC5"}`,
+          background: item.done ? C.green : "transparent", color: "#fff", cursor: "pointer" }}>
+        {item.done && <Check size={11} strokeWidth={3.6} />}
+      </button>
+      {editing ? (
+        <input value={draft} autoFocus onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={key} onBlur={() => { commit(); setEditing(false); }}
+          className="flex-1 rounded-md"
+          style={{ padding: "3px 7px", fontSize: 13.5, border: "1px solid " + C.rule, background: "#F7F8F6", outline: "none", color: C.ink, minWidth: 0 }} />
+      ) : (
+        <div {...editTrigger(() => { setDraft(item.text); setEditing(true); })} className="flex-1 min-w-0"
+          style={{ fontSize: 13.5, lineHeight: 1.5, cursor: "text", wordBreak: "break-word",
+            color: item.done ? C.faint : C.muted, textDecoration: item.done ? "line-through" : "none" }}>
+          {item.text}
+        </div>
+      )}
+      <button onClick={onDelete} className="wb-btn shrink-0"
+        style={{ background: "none", border: "none", color: "#C6CCC5", cursor: "pointer", padding: "0 2px", marginTop: 1 }}>
+        <X size={13} strokeWidth={2.4} />
+      </button>
+    </div>
+  );
+}
+
+function SubChecklist({ subs, onChange, hint = true }) {
+  const [adding, setAdding] = useState(false);
+  const [v, setV] = useState("");
+  const [focusId, setFocusId] = useState(null);
+  const list = subs || [];
+  const done = list.filter((x) => x.done).length;
+
+  const replace = (id, patch) => onChange(list.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  const move = (id, dir) => {
+    const i = list.findIndex((x) => x.id === id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= list.length) return;
+    const next = list.slice();
+    [next[i], next[j]] = [next[j], next[i]];
+    onChange(next);
+  };
+  const addAfter = (id) => {
+    const i = list.findIndex((x) => x.id === id);
+    const item = { id: uid(), text: "", done: false };
+    const next = list.slice();
+    next.splice(i + 1, 0, item);
+    onChange(next);
+    setFocusId(item.id);
+  };
+  const addAtEnd = (keepOpen) => {
+    const t = v.trim();
+    if (!t) { setAdding(false); return; }
+    onChange([...list, { id: uid(), text: t, done: false }]);
+    setV("");
+    setAdding(!!keepOpen);
+  };
+
+  return (
+    <div style={{ marginTop: 8, paddingLeft: 2 }}>
+      {list.length > 0 && (
+        <div className="flex items-center gap-1.5 mb-1">
+          <Label>하위 할 일</Label>
+          <span style={{ fontSize: 11, color: C.faint, fontWeight: 700 }}>{done}/{list.length}</span>
+        </div>
+      )}
+
+      <Sortable items={list} idOf={(x) => x.id} onReorder={onChange}
+        renderRow={(it, handle) => (
+          <SubItem item={it} handle={handle} autoEdit={focusId === it.id}
+            onToggle={() => replace(it.id, { done: !it.done })}
+            onEdit={(t) => replace(it.id, { text: t })}
+            onDelete={() => onChange(list.filter((x) => x.id !== it.id))}
+            onAddAfter={() => addAfter(it.id)}
+            onMove={(d) => move(it.id, d)} />
+        )} />
+
+      {adding ? (
+        <div className="flex items-center gap-1.5" style={{ padding: "4px 0" }}>
+          <span style={{ width: 14 }} />
+          <span className="rounded shrink-0" style={{ width: 17, height: 17, border: "1.6px dashed #C6CCC5" }} />
+          <input value={v} autoFocus onChange={(e) => setV(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); addAtEnd(e.ctrlKey || e.metaKey); return; }
+              if (e.key === "Escape") { setV(""); setAdding(false); }
+            }}
+            onBlur={() => addAtEnd(false)} placeholder="하위 할 일 입력" className="flex-1 rounded-md"
+            style={{ padding: "3px 7px", fontSize: 13.5, border: "1px solid " + C.rule, background: "#F7F8F6", outline: "none", color: C.ink, minWidth: 0 }} />
+        </div>
+      ) : (
+        <button onClick={() => setAdding(true)} className="wb-btn inline-flex items-center gap-1"
+          style={{ background: "none", border: "none", color: C.faint, fontSize: 12, fontWeight: 650, cursor: "pointer", padding: "4px 0 0" }}>
+          <Plus size={12} strokeWidth={2.6} /> 하위 할 일
+        </button>
+      )}
+
+      {hint && (adding || list.length > 1) && (
+        <div style={{ fontSize: 10.5, color: C.faint, marginTop: 5, lineHeight: 1.5 }}>
+          Ctrl+Enter 다음 항목 · Ctrl+↑↓ 순서 이동 · Enter 입력 마침
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TodoRow({ todo, handle, onToggle, onPatch, onDelete, pathNode }) {
   const [editing, setEditing] = useState(false);
   const [typing, setTyping] = useState(false);
+  const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(todo.text);
   const ref = useRef(null);
   return (
@@ -730,8 +905,37 @@ function TodoRow({ todo, handle, onToggle, onPatch, onDelete, pathNode }) {
                 textDecoration: todo.done ? "line-through" : "none", wordBreak: "break-word",
                 whiteSpace: "pre-wrap", cursor: "text" }}>{todo.text}</div>
           )}
-          <div className="mt-1.5"><DueChip item={todo} onClick={() => setEditing(!editing)} /></div>
+          <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+            <DueChip item={todo} onClick={() => setEditing(!editing)} />
+            <button onClick={() => setOpen(!open)} className="wb-btn inline-flex items-center gap-1 rounded-full"
+              style={{ background: "#F1F3F0", border: "none", color: C.muted, fontSize: 11,
+                fontWeight: 700, padding: "3px 8px", cursor: "pointer" }}>
+              <ChevronRight size={11} strokeWidth={2.6}
+                style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform .15s ease" }} />
+              세부정보
+              {(todo.note ? 1 : 0) + (todo.subs || []).length > 0 && (
+                <span style={{ color: C.navy }}>{(todo.subs || []).length ? (todo.subs || []).filter((x) => x.done).length + "/" + (todo.subs || []).length : "•"}</span>
+              )}
+            </button>
+          </div>
           {editing && <DueEditor value={todo} onChange={onPatch} onClose={() => setEditing(false)} />}
+
+          {!open && todo.note && (
+            <div className="truncate" style={{ fontSize: 12, color: C.faint, marginTop: 4 }}>{todo.note}</div>
+          )}
+
+          {open && (
+            <div className="rounded-xl" style={{ background: "#F7F8F6", border: "1px solid " + C.rule,
+              padding: "9px 11px", marginTop: 7 }}>
+              <Label>세부정보</Label>
+              <textarea value={todo.note || ""} onChange={(e) => onPatch({ note: e.target.value })}
+                rows={Math.max(2, String(todo.note || "").split("\n").length)}
+                placeholder="자세한 내용을 적어 두세요" className="w-full rounded-lg mt-1.5"
+                style={{ padding: "7px 9px", fontSize: 13, lineHeight: 1.55, color: C.ink, background: C.surface,
+                  border: "1px solid " + C.rule, outline: "none", resize: "vertical", fontFamily: FONT }} />
+              <SubChecklist subs={todo.subs || []} onChange={(next) => onPatch({ subs: next })} />
+            </div>
+          )}
         </div>
         {onDelete && <DeleteBtn onDelete={onDelete} label="" />}
       </div>
@@ -815,6 +1019,52 @@ const DocPanel = ({ sub, onToggleDoc, onSetDocMode }) => {
 };
 
 /* ------------------------------------------------------------------
+   잠금 화면
+------------------------------------------------------------------- */
+function LockScreen({ onOpen }) {
+  const [pw, setPw] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (!pw || busy) return;
+    setBusy(true); setMsg("");
+    const ok = await onOpen(pw);
+    if (!ok) { setMsg("비밀번호가 맞지 않습니다"); setPw(""); }
+    setBusy(false);
+  };
+
+  return (
+    <div style={{ fontFamily: FONT, background: C.bg, minHeight: "100dvh" }}
+      className="flex items-center justify-center">
+      <Card style={{ padding: 24, maxWidth: 340, width: "100%", margin: 18 }}>
+        <div className="flex items-center justify-center rounded-full"
+          style={{ width: 46, height: 46, background: C.navySoft, color: C.navy, margin: "0 auto 14px" }}>
+          <Lock size={21} strokeWidth={2.2} />
+        </div>
+        <div style={{ fontSize: 17, fontWeight: 780, textAlign: "center", letterSpacing: "-0.02em" }}>업무보드</div>
+        <div style={{ fontSize: 12.5, color: C.muted, textAlign: "center", marginTop: 4, lineHeight: 1.55 }}>
+          비밀번호를 넣어야 내용을 볼 수 있습니다
+        </div>
+        <input type="password" value={pw} autoFocus onChange={(e) => setPw(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+          className="w-full rounded-xl" style={{ marginTop: 16, padding: "11px 13px", fontSize: 15,
+            border: "1px solid " + C.rule, background: "#F7F8F6", outline: "none", color: C.ink, textAlign: "center" }} />
+        {msg && <div style={{ fontSize: 12, color: C.seal, textAlign: "center", marginTop: 8, fontWeight: 650 }}>{msg}</div>}
+        <div style={{ marginTop: 12 }}>
+          <Btn kind="solid" full icon={busy ? RefreshCw : Check} onClick={submit} disabled={busy}>
+            {busy ? "여는 중" : "열기"}
+          </Btn>
+        </div>
+        <div style={{ fontSize: 11, color: C.faint, lineHeight: 1.6, marginTop: 14 }}>
+          비밀번호를 잊으면 내용을 되살릴 수 없습니다. 백업 파일을 따로 보관해 두세요.
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------
    메인보드
 ------------------------------------------------------------------- */
 function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenProject, onGo, onAddMemo }) {
@@ -857,7 +1107,13 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
       pName: i >= 0 ? data.projects[i].name : "센터 일정",
       pColor: i >= 0 ? colorOf(data.projects[i], i) : C.navy };
   });
-  const merged = [...rows.map((r) => ({ ...r, kind: "todo" })), ...planRows];
+  const counselRows = (data.resv || []).map((r) => {
+    const c = (data.clients || []).find((x) => x.id === r.clientId);
+    return { id: r.id, kind: "counsel", text: (c ? c.name : "상담") + " · " + r.type,
+      due: r.date, dueTime: r.start || "", dueEnd: r.end || "", place: "", pid: "", sName: "",
+      pName: "상담", pColor: C.green };
+  });
+  const merged = [...rows.map((r) => ({ ...r, kind: "todo" })), ...planRows, ...counselRows];
 
   const agenda = (() => {
     const out = [];
@@ -1013,15 +1269,6 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
         )}
       </Card>
 
-      {/* 숫자 요약 */}
-      <div className="flex gap-2">
-        <Stat n={overdue.length} t="지연" tone="seal" onClick={() => onGo("projects")} />
-        <Stat n={today.length} t="오늘" tone="amber" onClick={() => onGo("projects")} />
-        <Stat n={week.length} t="7일 내" tone="navy" onClick={() => onGo("projects")} />
-        <Stat n={totalDocLeft} t="서류" tone="seal" onClick={() => onGo("projects")} />
-        <Stat n={data.memos.length} t="적어둠" tone="navy" onClick={() => onGo("projects")} />
-      </div>
-
       {/* 오늘의 비서 */}
       <Card style={{ padding: "13px 14px" }}>
         <div className="flex items-center gap-2 mb-2">
@@ -1041,8 +1288,9 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
             </div>
             {g.items.map((r) => {
               const ev = r.kind === "event";
+              const cs = r.kind === "counsel";
               return (
-                <button key={r.id} onClick={() => (ev ? onGo("plan") : onOpenSub(r.pid, r.sid))}
+                <button key={r.id} onClick={() => (cs ? onGo("counsel") : ev ? onGo("plan") : onOpenSub(r.pid, r.sid))}
                   className="wb-btn w-full flex items-start gap-2 text-left"
                   style={{ background: ev ? "rgba(36,72,107,0.045)" : "none", border: "none",
                     borderTop: "1px solid " + C.rule, borderRadius: ev ? 8 : 0,
@@ -1055,13 +1303,17 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
                   )}
                   <span className="flex-1 min-w-0">
                     <span className="flex items-center gap-1.5">
-                      {ev && <CalendarDays size={11} color={r.pColor} strokeWidth={2.5} className="shrink-0" />}
+                      <span className="shrink-0 rounded" style={{ fontSize: 8.5, fontWeight: 800, padding: "1px 4px",
+                        background: cs ? C.greenSoft : ev ? "rgba(36,72,107,0.12)" : "rgba(26,33,30,0.07)",
+                        color: cs ? C.green : C.muted }}>
+                        {cs ? "상담" : ev ? "일정" : "업무"}
+                      </span>
                       <span className="truncate" style={{ fontSize: 12.5, color: C.ink,
                         fontWeight: ev ? 700 : 400 }}>{r.text}</span>
                     </span>
                     <span className="block truncate" style={{ fontSize: 10, color: C.faint }}>
-                      {ev
-                        ? (r.pName === "센터 일정" ? "센터 일정" : shortName(r.pName) + " 일정") + (r.place ? " · " + r.place : "")
+                      {cs ? ORG
+                        : ev ? (r.pName === "센터 일정" ? "센터 일정" : shortName(r.pName) + " 일정") + (r.place ? " · " + r.place : "")
                         : shortName(r.pName) + " · " + r.sName}
                     </span>
                   </span>
@@ -1129,14 +1381,16 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
    메인
 ------------------------------------------------------------------- */
 export default function WorkBoard() {
-  const [data, setDataRaw] = useState({ projects: [], memos: [], notes: [], dueOrder: [], topOrder: [], planHidden: [], events: [], dueManual: false, updatedAt: 0 });
+  const [data, setDataRaw] = useState({ projects: [], memos: [], notes: [], dueOrder: [], topOrder: [], planHidden: [], events: [], clients: [], resv: [], resvTypes: [], contacts: [], dueManual: false, updatedAt: 0 });
   const [loaded, setLoaded] = useState(false);
+  const [needPw, setNeedPw] = useState(false);
+  const keyRef = useRef(null);
   const [storageOK, setStorageOK] = useState(true);
   const [sync, setSync] = useState(() => loadSync());
   const [syncState, setSyncState] = useState("off");   // off | syncing | ok | error
   const [syncMsg, setSyncMsg] = useState("");
   const [lastBackup, setLastBackup] = useState(() => Number(localStorage.getItem(BACKUP_KEY) || 0));
-  const [tab, setTab] = useState(() => (["home", "projects", "plan", "notes"].includes(lastView().tab) ? lastView().tab : "home"));
+  const [tab, setTab] = useState(() => (["home", "projects", "plan", "counsel", "notes", "contacts"].includes(lastView().tab) ? lastView().tab : "home"));
   const [openProject, setOpenProject] = useState(() => lastView().pid || null);
   const [openSub, setOpenSub] = useState(() => lastView().sid || null);
   const [showSettings, setShowSettings] = useState(false);
@@ -1154,7 +1408,7 @@ export default function WorkBoard() {
   });
 
   const normalize = (p) => ({
-    projects: p.projects || [], memos: p.memos || [], notes: p.notes || [], dueOrder: p.dueOrder || [], topOrder: p.topOrder || [], planHidden: p.planHidden || [], events: p.events || [],
+    projects: p.projects || [], memos: p.memos || [], notes: p.notes || [], dueOrder: p.dueOrder || [], topOrder: p.topOrder || [], planHidden: p.planHidden || [], events: p.events || [], clients: p.clients || [], resv: p.resv || [], resvTypes: p.resvTypes || [], contacts: p.contacts || [],
     dueManual: !!p.dueManual, updatedAt: p.updatedAt || 0,
   });
 
@@ -1166,7 +1420,11 @@ export default function WorkBoard() {
         try { await gToken(cfg.clientId, false); }
         catch (e) { setSyncState("signin"); setSyncMsg("구글 로그인이 필요합니다"); return; }
       }
-      const remote = await remoteGet(cfg);
+      let remote = await remoteGet(cfg);
+      if (typeof remote === "string" && isSealed(remote)) {
+        if (!keyRef.current) { setSyncState("error"); setSyncMsg("잠금이 걸려 있습니다"); return; }
+        remote = JSON.parse(await openText(keyRef.current, remote));
+      }
       const mine = base || dataRef.current;
       if (remote && (remote.updatedAt || 0) > (mine.updatedAt || 0)) {
         const n = normalize(remote);
@@ -1193,7 +1451,11 @@ export default function WorkBoard() {
   useEffect(() => {
     (async () => {
       let local = null;
-      try { const raw = await store.get(); if (raw) local = normalize(JSON.parse(raw)); } catch (e) {}
+      try {
+        const raw = await store.get();
+        if (raw && isSealed(raw)) { setNeedPw(true); setLoaded(true); return; }
+        if (raw) local = normalize(JSON.parse(raw));
+      } catch (e) {}
       if (local) setDataRaw(local);
       setLoaded(true);
       try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (e) {}
@@ -1203,10 +1465,11 @@ export default function WorkBoard() {
 
   /* 저장 — 이 기기에 먼저, 이어서 클라우드로 */
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || needPw) return;          /* 잠긴 동안에는 덮어쓰지 않습니다 */
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
-      const json = JSON.stringify(data);
+      const plain = JSON.stringify(data);
+      const json = keyRef.current ? await sealText(keyRef.current, plain) : plain;
       try { setStorageOK(await store.set(json)); } catch (e) { setStorageOK(false); }
       const cfg = syncRef.current;
       if (syncReady(cfg) && json !== lastPushed.current) {
@@ -1216,14 +1479,14 @@ export default function WorkBoard() {
         }
         setSyncState("syncing");
         try {
-          await remotePut(cfg, data);
+          await remotePut(cfg, keyRef.current ? await sealText(keyRef.current, plain) : data);
           lastPushed.current = json;
           setSyncState("ok"); setSyncMsg("");
         } catch (e) { setSyncState("error"); setSyncMsg(e.message || "연결하지 못했습니다"); }
       }
     }, 800);
     return () => clearTimeout(saveTimer.current);
-  }, [data, loaded]);
+  }, [data, loaded, needPw]);
 
   /* 앱으로 돌아올 때, 주기적으로, 그리고 인터넷이 돌아왔을 때 최신 내용 확인 */
   useEffect(() => {
@@ -1284,7 +1547,7 @@ export default function WorkBoard() {
 
   /* 지금 보고 있는 화면을 기억합니다 — 새로고침해도 그 자리로 돌아옵니다 */
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || needPw) return;
     saveView({ tab, pid: openProject, sid: openSub });
   }, [loaded, tab, openProject, openSub]);
 
@@ -1456,11 +1719,28 @@ export default function WorkBoard() {
       <span style={{ color: C.faint, fontSize: 14 }}>불러오는 중…</span></div>;
   }
 
+  if (needPw) {
+    return <LockScreen onOpen={async (pw) => {
+      const cfg = lockCfg();
+      if (!cfg) return false;
+      try {
+        const k = await deriveKey(pw, cfg.salt);
+        const raw = await store.get();
+        const plain = await openText(k, raw);
+        keyRef.current = k;
+        setDataRaw(normalize(JSON.parse(plain)));
+        setNeedPw(false);
+        if (syncReady(syncRef.current)) setTimeout(() => pull(syncRef.current), 300);
+        return true;
+      } catch (e) { return false; }
+    }} />;
+  }
+
   const header = tab !== "projects" ? null
     : sub ? { title: sub.name, sup: project.name, back: () => setOpenSub(null), color: colorOf(project, projectIdx) }
     : project ? { title: project.name, sup: "사업", back: () => setOpenProject(null), color: colorOf(project, projectIdx) } : null;
 
-  const titleOf = { home: "메인보드", projects: "업무 관리", plan: "일정", notes: "메모함" }[tab] || "메인보드";
+  const titleOf = { home: "메인보드", projects: "업무 관리", plan: "일정", counsel: "상담", notes: "메모함", contacts: "연락처" }[tab] || "메인보드";
 
   return (
     <div style={{ fontFamily: FONT, background: C.bg, minHeight: "100vh", color: C.ink }}>
@@ -1688,12 +1968,19 @@ export default function WorkBoard() {
 
           {tab === "plan" && (
             <PlanView data={data} rows={homeRows} events={data.events || []} onOpenSub={openSubPage}
+              onGoCounsel={() => setTab("counsel")}
               hidden={data.planHidden || []}
               onToggleHidden={(pid) => setData((d) => {
                 const h = d.planHidden || [];
                 return { ...d, planHidden: h.includes(pid) ? h.filter((x) => x !== pid) : [...h, pid] };
               })}
               onSetTodoTime={(pid, sid, tid, patch) => patchTodo(pid, sid, tid, patch)}
+              onDeleteTodo={(pid, sid, tid) => {
+                const sb = data.projects.find((x) => x.id === pid)?.subs.find((x) => x.id === sid);
+                const item = sb && sb.todos.find((t) => t.id === tid);
+                mapSub(pid, sid, (s2) => ({ ...s2, todos: s2.todos.filter((t) => t.id !== tid) }));
+                flash("삭제했습니다", () => item && mapSub(pid, sid, (s2) => ({ ...s2, todos: [...s2.todos, item] })));
+              }}
               onDeleteEvent={(id) => setData((d) => ({ ...d, events: (d.events || []).filter((e) => e.id !== id) }))}
               onSaveEvent={(v) => {
                 if (v.kind === "todo") {
@@ -1724,6 +2011,42 @@ export default function WorkBoard() {
               }} />
           )}
 
+          {tab === "counsel" && (
+            <CounselView data={data}
+              onSaveClient={(v) => setData((d) => {
+                const list = d.clients || [];
+                if (v.id) return { ...d, clients: list.map((c) => (c.id === v.id ? { ...c, ...v } : c)) };
+                return { ...d, clients: [...list, { ...v, id: uid(), createdAt: Date.now() }] };
+              })}
+              onDeleteClient={(id) => setData((d) => ({ ...d,
+                clients: (d.clients || []).filter((c) => c.id !== id),
+                resv: (d.resv || []).filter((r) => r.clientId !== id) }))}
+              onSaveResv={(v) => setData((d) => {
+                const list = d.resv || [];
+                if (v.id && list.some((r) => r.id === v.id)) {
+                  return { ...d, resv: list.map((r) => (r.id === v.id ? { ...r, ...v, lockClient: undefined } : r)) };
+                }
+                return { ...d, resv: [...list, { ...v, lockClient: undefined, id: uid(), createdAt: Date.now() }] };
+              })}
+              onDeleteResv={(id) => setData((d) => ({ ...d, resv: (d.resv || []).filter((r) => r.id !== id) }))}
+              onAddType={(t) => setData((d) => {
+                const list = d.resvTypes && d.resvTypes.length ? d.resvTypes : DEFAULT_TYPES;
+                return list.includes(t) ? d : { ...d, resvTypes: [...list, t] };
+              })}
+              onSaveLog={(rid, log) => setData((d) => ({ ...d,
+                resv: (d.resv || []).map((r) => (r.id === rid ? { ...r, log } : r)) }))} />
+          )}
+
+          {tab === "contacts" && (
+            <ContactsView data={data}
+              onSave={(v) => setData((d) => {
+                const list = d.contacts || [];
+                if (v.id) return { ...d, contacts: list.map((c) => (c.id === v.id ? { ...c, ...v } : c)) };
+                return { ...d, contacts: [...list, { ...v, id: uid(), createdAt: Date.now() }] };
+              })}
+              onDelete={(id) => setData((d) => ({ ...d, contacts: (d.contacts || []).filter((c) => c.id !== id) }))} />
+          )}
+
           {tab === "notes" && (
             <NotesView notes={data.notes || []} projects={data.projects}
               onAdd={addNote} onPatch={patchNote} onDelete={removeNote}
@@ -1735,24 +2058,26 @@ export default function WorkBoard() {
       </div>
 
       <div className="fixed bottom-0 left-0 right-0 z-40" style={{ background: "rgba(237,239,236,0.94)", backdropFilter: "blur(8px)", borderTop: "1px solid " + C.rule }}>
-        <div className="flex" style={{ maxWidth: 760, margin: "0 auto", padding: "8px 8px 14px" }}>
+        <div className="flex" style={{ maxWidth: 760, margin: "0 auto", padding: "7px 4px 13px" }}>
           {[{ k: "home", t: "메인", i: LayoutGrid, badge: 0 },
             { k: "projects", t: "업무", i: FolderClosed, badge: 0 },
             { k: "plan", t: "일정", i: CalendarDays, badge: 0 },
-            { k: "notes", t: "메모함", i: StickyNote, badge: 0 }].map((x) => {
+            { k: "counsel", t: "상담", i: Users, badge: 0 },
+            { k: "notes", t: "메모함", i: StickyNote, badge: 0 },
+            { k: "contacts", t: "연락처", i: Phone, badge: 0 }].map((x) => {
             const on = tab === x.k;
             return (
               <button key={x.k} onClick={() => { setTab(x.k); if (x.k === "projects") { setOpenProject(null); setOpenSub(null); } }}
                 className="wb-btn flex-1 flex flex-col items-center gap-1 rounded-xl"
                 style={{ background: "none", border: "none", cursor: "pointer", padding: "6px 0", color: on ? C.navy : C.faint }}>
                 <span className="relative">
-                  <x.i size={20} strokeWidth={on ? 2.5 : 2} />
+                  <x.i size={19} strokeWidth={on ? 2.5 : 2} />
                   {x.badge > 0 && (
                     <span className="absolute flex items-center justify-center rounded-full"
                       style={{ top: -5, right: -9, minWidth: 16, height: 16, padding: "0 4px", background: x.k === "due" ? C.seal : C.navy, color: "#fff", fontSize: 10, fontWeight: 800 }}>{x.badge}</span>
                   )}
                 </span>
-                <span style={{ fontSize: 10.5, fontWeight: on ? 750 : 600 }}>{x.t}</span>
+                <span style={{ fontSize: 10, fontWeight: on ? 750 : 600 }}>{x.t}</span>
               </button>
             );
           })}
@@ -1771,6 +2096,24 @@ export default function WorkBoard() {
             if (syncReady(cfg)) { await pull(cfg); } else { setSyncState("off"); }
           }}
           onSyncNow={() => pull(syncRef.current)}
+          locked={!!keyRef.current}
+          onSetLock={async (pw) => {
+            if (!cryptoOK()) { flash("이 브라우저에서는 잠금을 쓸 수 없습니다"); return; }
+            const salt = B64.to(crypto.getRandomValues(new Uint8Array(16)));
+            const k = await deriveKey(pw, salt);
+            keyRef.current = k;
+            localStorage.setItem(LOCK_KEY, JSON.stringify({ salt, at: Date.now() }));
+            await store.set(await sealText(k, JSON.stringify(dataRef.current)));
+            lastPushed.current = "";
+            flash("잠금을 켰습니다");
+          }}
+          onClearLock={async () => {
+            keyRef.current = null;
+            localStorage.removeItem(LOCK_KEY);
+            await store.set(JSON.stringify(dataRef.current));
+            lastPushed.current = "";
+            flash("잠금을 껐습니다");
+          }}
           onSignIn={signInGoogle}
           onImport={(p) => {
             const n = normalize(p);
@@ -1798,6 +2141,780 @@ export default function WorkBoard() {
 }
 
 /* ------------------------------------------------------------------
+   연락처 — 사업별로 정리해 두는 주소록
+------------------------------------------------------------------- */
+function ContactSheet({ init, projects, onSave, onDelete, onClose }) {
+  const dismiss = useDismiss(onClose);
+  const [v, setV] = useState({ name: "", org: "", role: "", phone: "", email: "", memo: "", pid: "", ...(init || {}) });
+  const inp = { padding: "9px 11px", fontSize: 13.5, border: "1px solid " + C.rule, background: C.surface,
+    outline: "none", color: C.ink, borderRadius: 8, width: "100%", fontFamily: FONT };
+
+  return (
+    <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade"
+      style={{ background: "rgba(26,33,30,0.4)", zIndex: 60 }} {...dismiss}>
+      <div className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
+        style={{ maxWidth: 440, background: C.bg, border: "1px solid " + C.rule, maxHeight: "88vh", overflowY: "auto" }}>
+        <div className="flex items-center justify-between" style={{ padding: "14px 16px 8px" }}>
+          <Label>{init && init.id ? "연락처 고치기" : "연락처 추가"}</Label>
+          <button onClick={onClose} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>
+            <X size={19} />
+          </button>
+        </div>
+
+        <div style={{ padding: "0 16px 16px" }}>
+          <Label>이름</Label>
+          <input value={v.name} autoFocus onChange={(e) => setV({ ...v, name: e.target.value })}
+            placeholder="이름" style={{ ...inp, marginTop: 5, marginBottom: 10 }} />
+
+          <div className="flex gap-2" style={{ marginBottom: 10 }}>
+            <div className="flex-1 min-w-0">
+              <Label>소속</Label>
+              <input value={v.org} onChange={(e) => setV({ ...v, org: e.target.value })}
+                placeholder="○○중학교" style={{ ...inp, marginTop: 5 }} />
+            </div>
+            <div style={{ width: 118 }}>
+              <Label>직함</Label>
+              <input value={v.role} onChange={(e) => setV({ ...v, role: e.target.value })}
+                placeholder="담당자" style={{ ...inp, marginTop: 5 }} />
+            </div>
+          </div>
+
+          <Label>연락처</Label>
+          <input value={v.phone} onChange={(e) => setV({ ...v, phone: e.target.value })}
+            placeholder="010-0000-0000" inputMode="tel" style={{ ...inp, marginTop: 5, marginBottom: 10 }} />
+
+          <Label>이메일</Label>
+          <input value={v.email} onChange={(e) => setV({ ...v, email: e.target.value })}
+            placeholder="name@example.com" inputMode="email" style={{ ...inp, marginTop: 5, marginBottom: 10 }} />
+
+          <Label>사업 묶기</Label>
+          <div className="flex items-center gap-1.5 flex-wrap" style={{ marginTop: 5, marginBottom: 10 }}>
+            <button onClick={() => setV({ ...v, pid: "" })} className="wb-btn rounded-full"
+              style={{ fontSize: 11.5, fontWeight: 700, padding: "4px 10px", cursor: "pointer",
+                background: !v.pid ? "#F1F3F0" : C.surface, color: !v.pid ? C.ink : C.faint,
+                border: "1px solid " + (!v.pid ? "#C9CFC7" : C.rule) }}>
+              공통
+            </button>
+            {projects.map((p, i) => {
+              const c = colorOf(p, i), on = v.pid === p.id;
+              return (
+                <button key={p.id} onClick={() => setV({ ...v, pid: p.id })} className="wb-btn inline-flex items-center gap-1.5 rounded-full"
+                  style={{ fontSize: 11.5, fontWeight: 700, padding: "4px 10px", cursor: "pointer",
+                    background: on ? c : C.surface, color: on ? "#fff" : C.muted,
+                    border: "1px solid " + (on ? c : C.rule), maxWidth: "100%" }}>
+                  {!on && <Dot color={c} size={7} />}
+                  <span className="truncate">{shortName(p.name)}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <Label>메모</Label>
+          <textarea value={v.memo} onChange={(e) => setV({ ...v, memo: e.target.value })} rows={2}
+            placeholder="기억해 둘 내용" style={{ ...inp, marginTop: 5, resize: "vertical", lineHeight: 1.55 }} />
+
+          <div className="flex items-center gap-2 mt-4">
+            {init && init.id && onDelete && <DeleteBtn onDelete={onDelete} label="삭제" />}
+            <div className="flex items-center gap-2" style={{ marginLeft: "auto" }}>
+              <Btn size="sm" onClick={onClose}>취소</Btn>
+              <Btn size="sm" kind="solid" icon={Check} disabled={!v.name.trim()}
+                onClick={() => onSave({ ...v, name: v.name.trim() })}>저장</Btn>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ContactsView({ data, onSave, onDelete }) {
+  const [q, setQ] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [sheet, setSheet] = useState(null);
+  const [openId, setOpenId] = useState(null);
+
+  const list = data.contacts || [];
+  const info = (pid) => {
+    const i = data.projects.findIndex((p) => p.id === pid);
+    return i < 0 ? null : { p: data.projects[i], color: colorOf(data.projects[i], i) };
+  };
+
+  const key = q.trim().toLowerCase();
+  const shown = list
+    .filter((c) => (filter === "all" ? true : filter === "none" ? !c.pid : c.pid === filter))
+    .filter((c) => !key || [c.name, c.org, c.role, c.phone, c.email, c.memo]
+      .some((x) => String(x || "").toLowerCase().includes(key)))
+    .sort((a, b) => a.name.localeCompare(b.name, "ko"));
+
+  const chip = (id, label, color, n) => {
+    const on = filter === id;
+    return (
+      <button key={id} onClick={() => setFilter(id)} className="wb-btn inline-flex items-center gap-1.5 rounded-full"
+        style={{ fontSize: 11.5, fontWeight: 700, padding: "4px 10px", cursor: "pointer",
+          background: on ? (color || C.navy) : C.surface, color: on ? "#fff" : C.muted,
+          border: "1px solid " + (on ? (color || C.navy) : C.rule), maxWidth: "100%" }}>
+        {!on && color && <Dot color={color} size={7} />}
+        <span className="truncate">{label}</span> {n}
+      </button>
+    );
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="이름 · 소속 · 번호 찾기"
+          className="flex-1 rounded-xl" style={{ padding: "10px 13px", fontSize: 13.5, color: C.ink,
+            background: C.surface, border: "1px solid " + C.rule, outline: "none", minWidth: 0 }} />
+        <Btn kind="solid" size="sm" icon={Plus} onClick={() => setSheet({})}>추가</Btn>
+      </div>
+
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {chip("all", "전체", null, list.length)}
+        {data.projects.map((p, i) => {
+          const n = list.filter((c) => c.pid === p.id).length;
+          if (!n) return null;
+          return chip(p.id, shortName(p.name), colorOf(p, i), n);
+        })}
+        {list.some((c) => !c.pid) && chip("none", "공통", null, list.filter((c) => !c.pid).length)}
+      </div>
+
+      {shown.length === 0 ? (
+        <Card style={{ padding: 24, textAlign: "center", color: C.muted, fontSize: 13.5, lineHeight: 1.6 }}>
+          {list.length === 0
+            ? <>연락처가 비어 있습니다.<br />일하며 알게 된 분들을 사업별로 정리해 두세요.</>
+            : "찾는 연락처가 없습니다."}
+        </Card>
+      ) : (
+        <Card style={{ padding: "4px 14px" }}>
+          {shown.map((c, idx) => {
+            const nfo = info(c.pid);
+            const open = openId === c.id;
+            return (
+              <div key={c.id} style={{ borderTop: idx === 0 ? "none" : "1px solid " + C.rule }}>
+                <button onClick={() => setOpenId(open ? null : c.id)}
+                  className="wb-btn w-full flex items-center gap-2 text-left"
+                  style={{ background: "none", border: "none", padding: "10px 0", cursor: "pointer" }}>
+                  <span className="flex items-center justify-center rounded-full shrink-0"
+                    style={{ width: 30, height: 30, background: nfo ? nfo.color : "#F1F3F0",
+                      color: nfo ? "#fff" : C.muted, fontSize: 12.5, fontWeight: 800 }}>
+                    {c.name.slice(0, 1)}
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className="flex items-center gap-1.5">
+                      <span style={{ fontSize: 14, fontWeight: 700 }}>{c.name}</span>
+                      {c.role && <span style={{ fontSize: 11, color: C.faint }}>{c.role}</span>}
+                    </span>
+                    <span className="block truncate" style={{ fontSize: 11.5, color: C.muted, marginTop: 1 }}>
+                      {[c.org, c.phone].filter(Boolean).join(" · ")}
+                    </span>
+                  </span>
+                  {nfo && (
+                    <span className="shrink-0 rounded" style={{ fontSize: 9.5, fontWeight: 750, padding: "2px 6px",
+                      background: "#F4F6F3", color: C.ink }}>{shortName(nfo.p.name)}</span>
+                  )}
+                  <ChevronRight size={14} color={C.faint} className="shrink-0"
+                    style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform .15s ease" }} />
+                </button>
+
+                {open && (
+                  <div style={{ paddingBottom: 11 }}>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {c.phone && (
+                        <>
+                          <a href={"tel:" + c.phone.replace(/[^\d+]/g, "")} className="wb-btn inline-flex items-center gap-1 rounded-lg"
+                            style={{ background: C.navy, color: "#fff", fontSize: 11.5, fontWeight: 700,
+                              padding: "6px 11px", textDecoration: "none" }}>
+                            <Phone size={12} strokeWidth={2.4} /> 전화
+                          </a>
+                          <a href={"sms:" + c.phone.replace(/[^\d+]/g, "")} className="wb-btn inline-flex items-center gap-1 rounded-lg"
+                            style={{ background: C.surface, color: C.ink, border: "1px solid " + C.rule,
+                              fontSize: 11.5, fontWeight: 700, padding: "6px 11px", textDecoration: "none" }}>
+                            문자
+                          </a>
+                          <button onClick={() => { navigator.clipboard?.writeText(c.phone); }}
+                            className="wb-btn rounded-lg" style={{ background: C.surface, color: C.muted,
+                              border: "1px solid " + C.rule, fontSize: 11.5, fontWeight: 700, padding: "6px 11px", cursor: "pointer" }}>
+                            번호 복사
+                          </button>
+                        </>
+                      )}
+                      {c.email && (
+                        <a href={"mailto:" + c.email} className="wb-btn inline-flex items-center gap-1 rounded-lg"
+                          style={{ background: C.surface, color: C.ink, border: "1px solid " + C.rule,
+                            fontSize: 11.5, fontWeight: 700, padding: "6px 11px", textDecoration: "none" }}>
+                          메일
+                        </a>
+                      )}
+                      <button onClick={() => setSheet(c)} className="wb-btn rounded-lg"
+                        style={{ marginLeft: "auto", background: "none", border: "none", color: C.faint,
+                          fontSize: 11.5, fontWeight: 650, padding: "6px 4px", cursor: "pointer" }}>
+                        <Pencil size={12} style={{ display: "inline", verticalAlign: "-1px" }} /> 고치기
+                      </button>
+                    </div>
+                    {c.email && (
+                      <div style={{ fontSize: 11.5, color: C.muted, marginTop: 7 }}>{c.email}</div>
+                    )}
+                    {c.memo && (
+                      <div className="rounded-lg" style={{ background: "#F7F8F6", border: "1px solid " + C.rule,
+                        padding: "8px 10px", marginTop: 7, fontSize: 12, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                        {c.memo}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </Card>
+      )}
+
+      {sheet && (
+        <ContactSheet init={sheet} projects={data.projects}
+          onClose={() => setSheet(null)}
+          onDelete={sheet.id ? () => { onDelete(sheet.id); setSheet(null); setOpenId(null); } : null}
+          onSave={(v) => { onSave(v); setSheet(null); }} />
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------
+   상담 — 내담자 · 예약 · 회기 · 상담일지
+------------------------------------------------------------------- */
+const ORG = "춘천시청소년상담복지센터";
+const DEFAULT_TYPES = ["개인상담", "마음결", "수강명령"];
+
+/* 구글 드라이브 주소에서 파일 id 를 꺼냅니다 */
+const driveId = (url) => {
+  const m = String(url || "").match(/\/file\/d\/([\w-]+)/) || String(url || "").match(/[?&]id=([\w-]+)/);
+  return m ? m[1] : "";
+};
+const drivePreview = (url) => { const id = driveId(url); return id ? "https://drive.google.com/file/d/" + id + "/preview" : ""; };
+const driveDownload = (url) => { const id = driveId(url); return id ? "https://drive.google.com/uc?export=download&id=" + id : url; };
+
+const ageOf = (birth) => {
+  if (!birth) return "";
+  const b = new Date(birth + "T00:00:00");
+  if (isNaN(b)) return "";
+  const now = new Date();
+  let a = now.getFullYear() - b.getFullYear();
+  const m = now.getMonth() - b.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < b.getDate())) a--;
+  return a + "세";
+};
+
+/* ── 내담자 등록 ── */
+function ClientSheet({ init, onSave, onDelete, onClose }) {
+  const dismiss = useDismiss(onClose);
+  const [v, setV] = useState({ name: "", phone: "", birth: "", sex: "", issue: "", ...(init || {}) });
+  const inp = { padding: "9px 11px", fontSize: 13.5, border: "1px solid " + C.rule, background: C.surface,
+    outline: "none", color: C.ink, borderRadius: 8, width: "100%", fontFamily: FONT };
+
+  return (
+    <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade"
+      style={{ background: "rgba(26,33,30,0.4)", zIndex: 60 }} {...dismiss}>
+      <div className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
+        style={{ maxWidth: 440, background: C.bg, border: "1px solid " + C.rule, maxHeight: "88vh", overflowY: "auto" }}>
+        <div className="flex items-center justify-between" style={{ padding: "14px 16px 8px" }}>
+          <Label>{init && init.id ? "내담자 정보" : "내담자 등록"}</Label>
+          <button onClick={onClose} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>
+            <X size={19} />
+          </button>
+        </div>
+
+        <div style={{ padding: "0 16px 16px" }}>
+          <div className="rounded-lg" style={{ background: "#F1F3F0", padding: "8px 10px", marginBottom: 12 }}>
+            <span style={{ fontSize: 11, color: C.faint, fontWeight: 700 }}>상담기관 </span>
+            <span style={{ fontSize: 12.5, color: C.ink, fontWeight: 650 }}>{ORG}</span>
+          </div>
+
+          <Label>이름</Label>
+          <input value={v.name} autoFocus onChange={(e) => setV({ ...v, name: e.target.value })}
+            placeholder="내담자 이름" style={{ ...inp, marginTop: 5, marginBottom: 10 }} />
+
+          <div className="flex gap-2" style={{ marginBottom: 10 }}>
+            <div className="flex-1 min-w-0">
+              <Label>생년월일</Label>
+              <input type="date" value={v.birth} onChange={(e) => setV({ ...v, birth: e.target.value })}
+                style={{ ...inp, marginTop: 5 }} />
+            </div>
+            <div style={{ width: 118 }}>
+              <Label>성별</Label>
+              <div className="flex rounded-lg" style={{ background: "#F1F3F0", padding: 3, gap: 3, marginTop: 5 }}>
+                {["남", "여"].map((g) => {
+                  const on = v.sex === g;
+                  return (
+                    <button key={g} onClick={() => setV({ ...v, sex: on ? "" : g })} className="wb-btn flex-1 rounded-md"
+                      style={{ padding: "6px 0", fontSize: 13, fontWeight: 700, cursor: "pointer",
+                        background: on ? C.surface : "transparent", color: on ? C.ink : C.faint,
+                        border: "1px solid " + (on ? C.rule : "transparent") }}>{g}</button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          <Label>연락처</Label>
+          <input value={v.phone} onChange={(e) => setV({ ...v, phone: e.target.value })}
+            placeholder="010-0000-0000" inputMode="tel" style={{ ...inp, marginTop: 5, marginBottom: 10 }} />
+
+          <Label>주호소 문제</Label>
+          <textarea value={v.issue} onChange={(e) => setV({ ...v, issue: e.target.value.slice(0, 200) })}
+            rows={3} placeholder="주호소 문제를 적어 두세요"
+            style={{ ...inp, marginTop: 5, resize: "vertical", lineHeight: 1.55 }} />
+          <div style={{ fontSize: 10.5, color: C.faint, textAlign: "right", marginTop: 3 }}>{(v.issue || "").length} / 200</div>
+
+          <div className="flex items-center gap-2 mt-4">
+            {init && init.id && onDelete && <DeleteBtn onDelete={onDelete} label="삭제" />}
+            <div className="flex items-center gap-2" style={{ marginLeft: "auto" }}>
+              <Btn size="sm" onClick={onClose}>취소</Btn>
+              <Btn size="sm" kind="solid" icon={Check} disabled={!v.name.trim()}
+                onClick={() => onSave({ ...v, name: v.name.trim() })}>저장</Btn>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── 상담 예약 ── */
+function ResvSheet({ init, clients, types, onAddType, onSave, onDelete, onClose }) {
+  const dismiss = useDismiss(onClose);
+  const [v, setV] = useState({ clientId: "", type: types[0] || "", date: todayISO(),
+    start: "15:00", end: "16:00", memo: "", ...(init || {}) });
+  const [newType, setNewType] = useState("");
+  const [adding, setAdding] = useState(false);
+  const inp = { padding: "9px 11px", fontSize: 13.5, border: "1px solid " + C.rule, background: C.surface,
+    outline: "none", color: C.ink, borderRadius: 8, fontFamily: FONT };
+
+  return (
+    <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade"
+      style={{ background: "rgba(26,33,30,0.4)", zIndex: 60 }} {...dismiss}>
+      <div className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
+        style={{ maxWidth: 440, background: C.bg, border: "1px solid " + C.rule, maxHeight: "88vh", overflowY: "auto" }}>
+        <div className="flex items-center justify-between" style={{ padding: "14px 16px 8px" }}>
+          <Label>{init && init.id ? "예약 고치기" : "상담 예약"}</Label>
+          <button onClick={onClose} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>
+            <X size={19} />
+          </button>
+        </div>
+
+        <div style={{ padding: "0 16px 16px" }}>
+          <div className="rounded-lg" style={{ background: "#F1F3F0", padding: "8px 10px", marginBottom: 12 }}>
+            <span style={{ fontSize: 11, color: C.faint, fontWeight: 700 }}>상담기관 </span>
+            <span style={{ fontSize: 12.5, color: C.ink, fontWeight: 650 }}>{ORG}</span>
+          </div>
+
+          <Label>내담자</Label>
+          {init && init.clientId && init.lockClient ? (
+            <div className="rounded-lg" style={{ background: C.surface, border: "1px solid " + C.rule,
+              padding: "9px 11px", marginTop: 5, fontSize: 13.5, fontWeight: 650 }}>
+              {(clients.find((c) => c.id === init.clientId) || {}).name}
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 flex-wrap" style={{ marginTop: 5 }}>
+              {clients.length === 0 && <span style={{ fontSize: 12, color: C.faint }}>먼저 내담자를 등록해 주세요</span>}
+              {clients.map((c) => {
+                const on = v.clientId === c.id;
+                return (
+                  <button key={c.id} onClick={() => setV({ ...v, clientId: c.id })} className="wb-btn rounded-full"
+                    style={{ fontSize: 12, fontWeight: 700, padding: "5px 11px", cursor: "pointer",
+                      background: on ? C.navy : C.surface, color: on ? "#fff" : C.muted,
+                      border: "1px solid " + (on ? C.navy : C.rule) }}>{c.name}</button>
+                );
+              })}
+            </div>
+          )}
+
+          <div style={{ marginTop: 12 }}>
+            <Label>유형</Label>
+            <div className="flex items-center gap-1.5 flex-wrap" style={{ marginTop: 5 }}>
+              {types.map((t) => {
+                const on = v.type === t;
+                return (
+                  <button key={t} onClick={() => setV({ ...v, type: t })} className="wb-btn rounded-full"
+                    style={{ fontSize: 12, fontWeight: 700, padding: "5px 11px", cursor: "pointer",
+                      background: on ? C.green : C.surface, color: on ? "#fff" : C.muted,
+                      border: "1px solid " + (on ? C.green : C.rule) }}>{t}</button>
+                );
+              })}
+              {adding ? (
+                <span className="inline-flex items-center gap-1">
+                  <input value={newType} autoFocus onChange={(e) => setNewType(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && newType.trim()) { onAddType(newType.trim()); setV({ ...v, type: newType.trim() }); setNewType(""); setAdding(false); }
+                      if (e.key === "Escape") { setNewType(""); setAdding(false); }
+                    }}
+                    placeholder="새 유형" style={{ ...inp, padding: "4px 9px", fontSize: 12, width: 96 }} />
+                </span>
+              ) : (
+                <button onClick={() => setAdding(true)} className="wb-btn inline-flex items-center gap-1 rounded-full"
+                  style={{ fontSize: 12, fontWeight: 700, padding: "5px 10px", cursor: "pointer",
+                    background: "transparent", color: C.faint, border: "1px dashed #C9CFC7" }}>
+                  <Plus size={12} strokeWidth={2.6} /> 유형 추가
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <Label>시작</Label>
+            <div className="flex items-center gap-2" style={{ marginTop: 5 }}>
+              <input type="date" value={v.date} onChange={(e) => setV({ ...v, date: e.target.value })} style={{ ...inp, flex: 1 }} />
+              <input type="time" value={v.start} onChange={(e) => setV({ ...v, start: e.target.value })} style={{ ...inp, width: 118 }} />
+            </div>
+          </div>
+          <div style={{ marginTop: 8 }}>
+            <Label>종료</Label>
+            <div className="flex items-center gap-2" style={{ marginTop: 5 }}>
+              <input type="date" value={v.date} disabled style={{ ...inp, flex: 1, background: "#F1F3F0", color: C.faint }} />
+              <input type="time" value={v.end} onChange={(e) => setV({ ...v, end: e.target.value })} style={{ ...inp, width: 118 }} />
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <Label>예약 메모</Label>
+            <textarea value={v.memo} onChange={(e) => setV({ ...v, memo: e.target.value })} rows={2}
+              placeholder="예약에 대한 메모를 적어 두세요"
+              style={{ ...inp, width: "100%", marginTop: 5, resize: "vertical", lineHeight: 1.55 }} />
+          </div>
+
+          <div className="flex items-center gap-2 mt-4">
+            {init && init.id && onDelete && <DeleteBtn onDelete={onDelete} label="삭제" />}
+            <div className="flex items-center gap-2" style={{ marginLeft: "auto" }}>
+              <Btn size="sm" onClick={onClose}>취소</Btn>
+              <Btn size="sm" kind="solid" icon={Check} disabled={!v.clientId}
+                onClick={() => onSave(v)}>등록하기</Btn>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── 상담일지 ── */
+function LogSheet({ resv, client, session, onSave, onClose }) {
+  const dismiss = useDismiss(onClose);
+  const [text, setText] = useState((resv.log && resv.log.text) || "");
+  const [files, setFiles] = useState((resv.log && resv.log.files) || []);
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const [openId, setOpenId] = useState(null);
+  const inp = { padding: "8px 10px", fontSize: 13, border: "1px solid " + C.rule, background: C.surface,
+    outline: "none", color: C.ink, borderRadius: 8, fontFamily: FONT, minWidth: 0 };
+
+  const add = () => {
+    const u = url.trim();
+    if (!u) return;
+    setFiles([...files, { id: uid(), name: name.trim() || (driveId(u) ? "첨부파일" : u), url: u }]);
+    setName(""); setUrl("");
+  };
+
+  return (
+    <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade"
+      style={{ background: "rgba(26,33,30,0.4)", zIndex: 60 }} {...dismiss}>
+      <div className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
+        style={{ maxWidth: 560, background: C.bg, border: "1px solid " + C.rule, maxHeight: "90vh", overflowY: "auto" }}>
+        <div className="flex items-center justify-between" style={{ padding: "14px 16px 8px" }}>
+          <div>
+            <Label>상담일지</Label>
+            <div style={{ fontSize: 15, fontWeight: 750, marginTop: 3 }}>
+              {session}회기 · {client ? client.name : ""}
+            </div>
+            <div style={{ fontSize: 11.5, color: C.faint, marginTop: 2 }}>
+              {fmtDateK(resv.date)} {resv.start}{resv.end ? "–" + resv.end : ""} · {resv.type}
+            </div>
+          </div>
+          <button onClick={onClose} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>
+            <X size={19} />
+          </button>
+        </div>
+
+        <div style={{ padding: "0 16px 16px" }}>
+          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={9}
+            placeholder="상담 내용을 적어 주세요"
+            style={{ ...inp, width: "100%", fontSize: 13.5, lineHeight: 1.7, resize: "vertical" }} />
+
+          <div style={{ marginTop: 14 }}>
+            <Label>첨부파일</Label>
+            <div style={{ fontSize: 11, color: C.faint, margin: "4px 0 8px", lineHeight: 1.6 }}>
+              구글 드라이브에 올린 뒤 <b style={{ color: C.muted }}>공유 링크</b>를 붙여 넣으세요.
+              드라이브에서 <b style={{ color: C.muted }}>링크가 있는 모든 사용자</b>로 열어 두어야 미리보기가 됩니다.
+            </div>
+
+            {files.map((f) => (
+              <div key={f.id} className="rounded-lg" style={{ background: C.surface, border: "1px solid " + C.rule, marginBottom: 6 }}>
+                <div className="flex items-center gap-2" style={{ padding: "8px 10px" }}>
+                  <Paperclip size={14} color={C.muted} strokeWidth={2.2} className="shrink-0" />
+                  <span className="flex-1 min-w-0 truncate" style={{ fontSize: 12.5, fontWeight: 650 }}>{f.name}</span>
+                  {driveId(f.url) && (
+                    <button onClick={() => setOpenId(openId === f.id ? null : f.id)} className="wb-btn rounded"
+                      style={{ background: "#F1F3F0", border: "none", color: C.muted, fontSize: 11,
+                        fontWeight: 700, padding: "3px 8px", cursor: "pointer" }}>
+                      {openId === f.id ? "닫기" : "미리보기"}
+                    </button>
+                  )}
+                  <a href={driveDownload(f.url)} target="_blank" rel="noreferrer noopener"
+                    className="wb-btn rounded shrink-0" style={{ background: "#F1F3F0", color: C.muted,
+                      fontSize: 11, fontWeight: 700, padding: "3px 8px", textDecoration: "none" }}>
+                    내려받기
+                  </a>
+                  <button onClick={() => setFiles(files.filter((x) => x.id !== f.id))} className="wb-btn shrink-0"
+                    style={{ background: "none", border: "none", color: "#C6CCC5", cursor: "pointer", padding: "0 2px" }}>
+                    <X size={13} strokeWidth={2.4} />
+                  </button>
+                </div>
+                {openId === f.id && drivePreview(f.url) && (
+                  <iframe src={drivePreview(f.url)} title={f.name}
+                    style={{ width: "100%", height: 380, border: "none", borderTop: "1px solid " + C.rule }} />
+                )}
+              </div>
+            ))}
+
+            <div className="flex items-center gap-2 mt-2">
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="파일 이름"
+                style={{ ...inp, width: 108 }} />
+              <input value={url} onChange={(e) => setUrl(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && add()}
+                placeholder="드라이브 링크 붙여넣기" style={{ ...inp, flex: 1 }} />
+              <Btn size="sm" kind="solid" icon={Plus} onClick={add}>추가</Btn>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 mt-5">
+            <Btn size="sm" onClick={onClose} full={false}>취소</Btn>
+            <div style={{ marginLeft: "auto" }}>
+              <Btn size="sm" kind="solid" icon={Check}
+                onClick={() => onSave({ text: text.trim(), files })}>저장</Btn>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── 상담 화면 ── */
+function CounselView({ data, onSaveClient, onDeleteClient, onSaveResv, onDeleteResv, onAddType, onSaveLog }) {
+  const [openClient, setOpenClient] = useState(null);
+  const [clientSheet, setClientSheet] = useState(null);
+  const [resvSheet, setResvSheet] = useState(null);
+  const [logFor, setLogFor] = useState(null);
+  const [showPast, setShowPast] = useState(false);
+
+  const clients = data.clients || [];
+  const resv = data.resv || [];
+  const types = data.resvTypes && data.resvTypes.length ? data.resvTypes : DEFAULT_TYPES;
+
+  const sessionsOf = (cid) => resv.filter((r) => r.clientId === cid)
+    .sort((a, b) => (a.date + (a.start || "")).localeCompare(b.date + (b.start || "")));
+  const seqOf = (r) => sessionsOf(r.clientId).findIndex((x) => x.id === r.id) + 1;
+
+  const upcoming = resv.filter((r) => r.date >= todayISO())
+    .sort((a, b) => (a.date + (a.start || "")).localeCompare(b.date + (b.start || "")));
+  const past = resv.filter((r) => r.date < todayISO())
+    .sort((a, b) => (b.date + (b.start || "")).localeCompare(a.date + (a.start || "")));
+
+  const nameOf = (cid) => (clients.find((c) => c.id === cid) || {}).name || "(삭제된 내담자)";
+
+  const ResvRow = ({ r, showName }) => (
+    <div className="flex items-start gap-2" style={{ padding: "8px 0", borderTop: "1px solid " + C.rule }}>
+      <span className="shrink-0 flex items-center justify-center rounded"
+        style={{ minWidth: 28, height: 20, background: C.greenSoft, color: C.green,
+          fontSize: 10.5, fontWeight: 800, marginTop: 1 }}>
+        {seqOf(r)}회
+      </span>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          {showName && <span style={{ fontSize: 13, fontWeight: 700 }}>{nameOf(r.clientId)}</span>}
+          <span className="rounded" style={{ fontSize: 9.5, fontWeight: 750, padding: "1px 5px",
+            background: "#F1F3F0", color: C.muted }}>{r.type}</span>
+          {r.log && (r.log.text || (r.log.files || []).length) && (
+            <span className="rounded" style={{ fontSize: 9.5, fontWeight: 750, padding: "1px 5px",
+              background: C.navySoft, color: C.navy }}>일지</span>
+          )}
+        </div>
+        <div style={{ fontSize: 11.5, color: C.muted, marginTop: 2, fontVariantNumeric: "tabular-nums" }}>
+          {fmtDateK(r.date)} {r.start}{r.end ? "–" + r.end : ""}
+        </div>
+        {r.memo && <div className="truncate" style={{ fontSize: 11, color: C.faint, marginTop: 2 }}>{r.memo}</div>}
+      </div>
+      <button onClick={() => setLogFor(r)} className="wb-btn shrink-0 rounded-lg"
+        style={{ background: "#F1F3F0", border: "none", color: C.muted, fontSize: 11,
+          fontWeight: 700, padding: "4px 9px", cursor: "pointer" }}>
+        상담일지
+      </button>
+      <button onClick={() => setResvSheet({ ...r, lockClient: true })} className="wb-btn shrink-0"
+        style={{ background: "none", border: "none", color: C.faint, cursor: "pointer", padding: "2px 3px" }}>
+        <Pencil size={13} />
+      </button>
+    </div>
+  );
+
+  /* 내담자 상세 */
+  if (openClient) {
+    const c = clients.find((x) => x.id === openClient);
+    if (!c) { setOpenClient(null); return null; }
+    const list = sessionsOf(c.id);
+    return (
+      <div className="flex flex-col gap-3">
+        <button onClick={() => setOpenClient(null)} className="wb-btn inline-flex items-center gap-1"
+          style={{ background: "none", border: "none", color: C.muted, fontSize: 12.5, fontWeight: 650, cursor: "pointer", padding: 0 }}>
+          <ChevronLeft size={15} /> 내담자 목록
+        </button>
+
+        <Card style={{ padding: 15 }}>
+          <div className="flex items-start gap-2">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span style={{ fontSize: 18, fontWeight: 780, letterSpacing: "-0.02em" }}>{c.name}</span>
+                {c.sex && <Chip tone="neutral">{c.sex}</Chip>}
+                {c.birth && <Chip tone="neutral">{ageOf(c.birth)}</Chip>}
+              </div>
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 5, lineHeight: 1.6 }}>
+                {c.birth && <div>생년월일 {c.birth}</div>}
+                {c.phone && <div>연락처 {c.phone}</div>}
+                <div>상담기관 {ORG}</div>
+              </div>
+            </div>
+            <button onClick={() => setClientSheet(c)} className="wb-btn shrink-0"
+              style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 3 }}>
+              <Pencil size={15} />
+            </button>
+          </div>
+          {c.issue && (
+            <div className="rounded-lg" style={{ background: "#F7F8F6", border: "1px solid " + C.rule,
+              padding: "9px 11px", marginTop: 11 }}>
+              <Label>주호소 문제</Label>
+              <div style={{ fontSize: 12.5, lineHeight: 1.6, color: C.ink, marginTop: 4, whiteSpace: "pre-wrap" }}>{c.issue}</div>
+            </div>
+          )}
+        </Card>
+
+        <Card style={{ padding: "13px 14px" }}>
+          <div className="flex items-center gap-2 mb-1">
+            <Label>상담 회기 {list.length}</Label>
+            <button onClick={() => setResvSheet({ clientId: c.id, lockClient: true })}
+              className="wb-btn inline-flex items-center gap-1 rounded-lg"
+              style={{ marginLeft: "auto", background: C.navy, border: "none", color: "#fff",
+                fontSize: 11.5, fontWeight: 700, padding: "5px 10px", cursor: "pointer" }}>
+              <Plus size={12} strokeWidth={2.6} /> 상담 예약
+            </button>
+          </div>
+          {list.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: C.faint, padding: "10px 0" }}>아직 예약된 회기가 없습니다</div>
+          ) : list.map((r) => <ResvRow key={r.id} r={r} />)}
+        </Card>
+
+        {clientSheet && (
+          <ClientSheet init={clientSheet} onClose={() => setClientSheet(null)}
+            onDelete={() => { onDeleteClient(clientSheet.id); setClientSheet(null); setOpenClient(null); }}
+            onSave={(v) => { onSaveClient(v); setClientSheet(null); }} />
+        )}
+        {resvSheet && (
+          <ResvSheet init={resvSheet} clients={clients} types={types} onAddType={onAddType}
+            onClose={() => setResvSheet(null)}
+            onDelete={resvSheet.id ? () => { onDeleteResv(resvSheet.id); setResvSheet(null); } : null}
+            onSave={(v) => { onSaveResv(v); setResvSheet(null); }} />
+        )}
+        {logFor && (
+          <LogSheet resv={logFor} client={c} session={seqOf(logFor)}
+            onClose={() => setLogFor(null)}
+            onSave={(log) => { onSaveLog(logFor.id, log); setLogFor(null); }} />
+        )}
+      </div>
+    );
+  }
+
+  /* 목록 */
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <Btn kind="solid" size="sm" icon={Plus} onClick={() => setClientSheet({})}>내담자 등록</Btn>
+        <Btn size="sm" icon={CalendarDays} onClick={() => setResvSheet({})}>상담 예약</Btn>
+      </div>
+
+      <Card style={{ padding: "13px 14px" }}>
+        <div className="flex items-center gap-2 mb-1">
+          <Users size={14} color={C.navy} strokeWidth={2.3} />
+          <Label>내담자 {clients.length}</Label>
+        </div>
+        {clients.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: C.faint, padding: "10px 0" }}>등록된 내담자가 없습니다</div>
+        ) : clients.map((c) => {
+          const n = sessionsOf(c.id).length;
+          return (
+            <button key={c.id} onClick={() => setOpenClient(c.id)}
+              className="wb-btn w-full flex items-center gap-2 text-left"
+              style={{ background: "none", border: "none", borderTop: "1px solid " + C.rule,
+                padding: "9px 0", cursor: "pointer" }}>
+              <span className="flex items-center justify-center rounded-full shrink-0"
+                style={{ width: 28, height: 28, background: C.navySoft, color: C.navy, fontSize: 12, fontWeight: 800 }}>
+                {c.name.slice(0, 1)}
+              </span>
+              <span className="flex-1 min-w-0">
+                <span className="flex items-center gap-1.5">
+                  <span style={{ fontSize: 13.5, fontWeight: 700 }}>{c.name}</span>
+                  {c.sex && <span style={{ fontSize: 10.5, color: C.faint }}>({c.sex})</span>}
+                  {c.birth && <span style={{ fontSize: 10.5, color: C.faint }}>{ageOf(c.birth)}</span>}
+                </span>
+                {c.issue && <span className="block truncate" style={{ fontSize: 11, color: C.faint, marginTop: 1 }}>{c.issue}</span>}
+              </span>
+              <span className="shrink-0 rounded" style={{ fontSize: 10.5, fontWeight: 750, padding: "2px 7px",
+                background: n ? C.greenSoft : "#F1F3F0", color: n ? C.green : C.faint }}>
+                {n}회기
+              </span>
+              <ChevronRight size={14} color={C.faint} className="shrink-0" />
+            </button>
+          );
+        })}
+      </Card>
+
+      <Card style={{ padding: "13px 14px" }}>
+        <div className="flex items-center gap-2 mb-1">
+          <CalendarDays size={14} color={C.navy} strokeWidth={2.3} />
+          <Label>다가오는 상담 {upcoming.length}</Label>
+        </div>
+        {upcoming.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: C.faint, padding: "10px 0" }}>예정된 상담이 없습니다</div>
+        ) : upcoming.map((r) => <ResvRow key={r.id} r={r} showName />)}
+      </Card>
+
+      {past.length > 0 && (
+        <Card style={{ padding: "11px 14px" }}>
+          <button onClick={() => setShowPast(!showPast)} className="wb-btn w-full flex items-center gap-2"
+            style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}>
+            <Label>지난 상담 {past.length}</Label>
+            <ChevronRight size={14} color={C.faint} style={{ marginLeft: "auto",
+              transform: showPast ? "rotate(90deg)" : "none", transition: "transform .15s ease" }} />
+          </button>
+          {showPast && <div style={{ marginTop: 4 }}>{past.map((r) => <ResvRow key={r.id} r={r} showName />)}</div>}
+        </Card>
+      )}
+
+      {clientSheet && (
+        <ClientSheet init={clientSheet} onClose={() => setClientSheet(null)}
+          onDelete={clientSheet.id ? () => { onDeleteClient(clientSheet.id); setClientSheet(null); } : null}
+          onSave={(v) => { onSaveClient(v); setClientSheet(null); }} />
+      )}
+      {resvSheet && (
+        <ResvSheet init={resvSheet} clients={clients} types={types} onAddType={onAddType}
+          onClose={() => setResvSheet(null)}
+          onDelete={resvSheet.id ? () => { onDeleteResv(resvSheet.id); setResvSheet(null); } : null}
+          onSave={(v) => { onSaveResv(v); setResvSheet(null); }} />
+      )}
+      {logFor && (
+        <LogSheet resv={logFor} client={clients.find((c) => c.id === logFor.clientId)} session={seqOf(logFor)}
+          onClose={() => setLogFor(null)}
+          onSave={(log) => { onSaveLog(logFor.id, log); setLogFor(null); }} />
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------
    일정 — 월 · 주 · 일 보기, 끌어서 시간 맞추기
 ------------------------------------------------------------------- */
 const HOUR_H = 46;          /* 한 시간의 높이(px) */
@@ -1809,7 +2926,7 @@ const toHM = (m) => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m
 const snap = (m) => Math.max(0, Math.min(24 * 60 - 10, Math.round(m / 10) * 10));
 
 /* 일정 만들기 · 고치기 */
-function PlanSheet({ init, projects, onSave, onDelete, onClose }) {
+function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoSub }) {
   const dismiss = useDismiss(onClose);
   const [kind, setKind] = useState(init.kind || "event");
   const [title, setTitle] = useState(init.title || "");
@@ -1864,17 +2981,6 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose }) {
             className="w-full" style={{ fontSize: 17, fontWeight: 700, color: C.ink, background: "transparent",
               border: "none", borderBottom: "2px solid " + C.navy, outline: "none", padding: "6px 2px", marginBottom: 10 }} />
 
-          <div className="flex rounded-lg" style={{ background: "#F1F3F0", padding: 3, gap: 3, marginBottom: 4 }}>
-            {[{ k: "event", t: "일정" }, { k: "todo", t: "업무" }].map((o) => {
-              const on = kind === o.k;
-              return (
-                <button key={o.k} onClick={() => setKind(o.k)} className="wb-btn flex-1 rounded-md"
-                  style={{ padding: "7px 4px", fontSize: 13, fontWeight: 700, cursor: "pointer",
-                    background: on ? C.surface : "transparent", color: on ? C.ink : C.faint,
-                    border: "1px solid " + (on ? C.rule : "transparent") }}>{o.t}</button>
-              );
-            })}
-          </div>
 
           <Field icon={Clock}>
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full" style={inp} />
@@ -1947,6 +3053,16 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose }) {
             </>
           )}
 
+          {init.id && init.kind === "todo" && init.sid && onGoSub && (
+            <button onClick={() => onGoSub(init.pid, init.sid)} className="wb-btn w-full flex items-center gap-2 rounded-lg mt-3"
+              style={{ background: init.hl || C.navySoft, border: "1px solid " + C.rule,
+                borderLeft: "4px solid " + (init.color || C.navy), padding: "9px 11px", cursor: "pointer" }}>
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: C.ink }}>{init.sName || "세부사업"}</span>
+              <span style={{ fontSize: 11, color: C.muted, marginLeft: "auto" }}>열기</span>
+              <ChevronRight size={14} color={C.muted} />
+            </button>
+          )}
+
           <div className="flex items-center gap-2 mt-4">
             {init.id && onDelete && (
               <DeleteBtn onDelete={onDelete} label="삭제" />
@@ -1962,7 +3078,7 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose }) {
   );
 }
 
-function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSaveEvent, onDeleteEvent, onSetTodoTime }) {
+function PlanView({ data, rows, events, onOpenSub, onGoCounsel, hidden, onToggleHidden, onSaveEvent, onDeleteEvent, onSetTodoTime, onDeleteTodo }) {
   const [tick, setTick] = useState(0);
   useEffect(() => { const iv = setInterval(() => setTick((n) => n + 1), 60000); return () => clearInterval(iv); }, []);
   const nowM = nowMin();
@@ -1996,6 +3112,12 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
       pid: e.pid || "", sid: "", place: e.place, memo: e.memo,
       color: colorFor(e.pid || ""), hl: "",
     })),
+    ...(data.resv || []).map((r) => {
+      const c = (data.clients || []).find((x) => x.id === r.clientId);
+      return { id: r.id, kind: "counsel", title: (c ? c.name : "상담") + " · " + r.type,
+        date: r.date, start: r.start || "", end: r.end || "", pid: "", sid: "",
+        place: "", memo: r.memo, color: C.green, hl: C.greenSoft, readOnly: true };
+    }),
   ].filter((x) => x.date && !hidden.includes(x.pid || CENTER));
 
   const onDay = (iso) => all.filter((x) => x.date === iso);
@@ -2044,6 +3166,12 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
           if (end <= toMin(cur.x.start) + 10) return cur;
           return { ...cur, end: toHM(end) };
         }
+        if (cur.mode === "resizeTop") {
+          const st2 = snap(raw - cur.grab);
+          const endM = toMin(cur.x.end || cur.x.start) + (cur.x.end ? 0 : 60);
+          if (st2 >= endM - 10 || st2 < 0) return cur;
+          return { ...cur, start: toHM(st2) };
+        }
         const start = snap(Math.max(0, raw - cur.grab));
         return { ...cur, date, start: toHM(start), end: toHM(start + cur.dur) };
       });
@@ -2052,6 +3180,7 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
       setDrag((cur) => {
         if (cur) {
           if (cur.mode === "resize" && cur.end) applyTime(cur.x, cur.x.start, cur.end);
+          else if (cur.mode === "resizeTop" && cur.start) applyTime(cur.x, cur.start, cur.x.end || toHM(toMin(cur.x.start) + 60));
           else if (cur.mode === "move" && cur.start) moveTo(cur.x, cur.date, cur.start, cur.end);
         }
         return null;
@@ -2067,13 +3196,13 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
     };
   }, [drag && drag.id, drag && drag.mode]);
 
-  /* 아래 손잡이 — 끝나는 시각 조절 */
-  const beginResize = (e, x, col) => {
+  /* 가장자리를 끌어 시각 조절 (위 = 시작, 아래 = 끝) */
+  const beginResize = (e, x, col, edge) => {
     e.preventDefault(); e.stopPropagation();
     if (!col) return;
-    const cur = toMin(x.end || x.start) + (x.end ? 0 : 60);
-    setDrag({ mode: "resize", id: x.id, x, col, date: x.date,
-      grab: minInCol(col, e.clientY) - cur, end: x.end || "" });
+    const cur = edge === "top" ? toMin(x.start) : toMin(x.end || x.start) + (x.end ? 0 : 60);
+    setDrag({ mode: edge === "top" ? "resizeTop" : "resize", id: x.id, x, col, date: x.date,
+      grab: minInCol(col, e.clientY) - cur, start: x.start, end: x.end || "" });
   };
 
   /* 블록 몸통 — 통째로 옮기기 */
@@ -2092,16 +3221,17 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
 
   const Block = ({ x, iso, compact }) => {
     const on = drag && drag.id === x.id;
-    const showStart = on && drag.mode === "move" ? drag.start : x.start;
-    const showEnd = on ? (drag.mode === "move" ? drag.end : drag.end || x.end) : x.end;
+    const showStart = on && (drag.mode === "move" || drag.mode === "resizeTop") ? drag.start : x.start;
+    const showEnd = on ? (drag.mode === "move" ? drag.end : drag.mode === "resizeTop" ? x.end : (drag.end || x.end)) : x.end;
     const hideHere = on && drag.mode === "move" && drag.date !== iso;
     if (hideHere) return null;
     return (
       <div className="rounded-lg"
-        onPointerDown={(e) => beginMove(e, x, e.currentTarget.closest("[data-daycol]"))}
+        onPointerDown={(e) => { if (x.readOnly) return; beginMove(e, x, e.currentTarget.closest("[data-daycol]")); }}
         onClick={(ev) => {
           ev.stopPropagation();
           if (drag) return;
+          if (x.kind === "counsel") { onGoCounsel && onGoCounsel(); return; }
           setSheet({ ...x, kind: x.kind });
         }}
         style={{
@@ -2116,17 +3246,25 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
           <div style={{ fontSize: compact ? 8.5 : 10, fontWeight: 750, color: C.muted, fontVariantNumeric: "tabular-nums" }}>
             {showStart}{showEnd ? "–" + showEnd : ""}
           </div>
-          <div className="truncate" style={{ fontSize: compact ? 9.5 : 12, fontWeight: 650, color: C.ink }}>{x.title}</div>
+          <div className="flex items-center gap-1">
+            {!compact && (
+              <span className="shrink-0 rounded" style={{ fontSize: 8.5, fontWeight: 800, padding: "1px 4px",
+                background: x.kind === "event" ? "rgba(36,72,107,0.12)" : "rgba(26,33,30,0.07)", color: C.muted }}>
+                {x.kind === "event" ? "일정" : x.kind === "counsel" ? "상담" : "업무"}
+              </span>
+            )}
+            <span className="truncate" style={{ fontSize: compact ? 9.5 : 12, fontWeight: 650, color: C.ink }}>{x.title}</span>
+          </div>
           {!compact && (
             <div className="truncate" style={{ fontSize: 9.5, color: C.faint }}>
               {nameFor(x.pid)}{x.sName ? " · " + x.sName : ""}{x.place ? " · " + x.place : ""}
             </div>
           )}
         </div>
-        <div onPointerDown={(e) => beginResize(e, x, e.currentTarget.closest("[data-daycol]"))}
-          style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 12, cursor: "ns-resize", touchAction: "none" }}>
-          <span style={{ display: "block", width: 26, height: 3, borderRadius: 3, background: "rgba(26,33,30,0.22)", margin: "3px auto" }} />
-        </div>
+        <div onPointerDown={(e) => beginResize(e, x, e.currentTarget.closest("[data-daycol]"), "top")}
+          style={{ position: "absolute", left: 0, right: 0, top: 0, height: 9, cursor: "ns-resize", touchAction: "none" }} />
+        <div onPointerDown={(e) => beginResize(e, x, e.currentTarget.closest("[data-daycol]"), "bottom")}
+          style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 9, cursor: "ns-resize", touchAction: "none" }} />
       </div>
     );
   };
@@ -2179,15 +3317,16 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
     return cells;
   })();
 
+  /* 월요일에서 시작해 일요일로 끝납니다 */
   const weekDays = (() => {
     const d = new Date(pick + "T00:00:00");
-    d.setDate(d.getDate() - d.getDay());
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
     return [0, 1, 2, 3, 4, 5, 6].map((k) => {
       const c = new Date(d);
       c.setDate(c.getDate() + k);
       c.setMinutes(c.getMinutes() - c.getTimezoneOffset());
       const iso = c.toISOString().slice(0, 10);
-      return { iso, wd: ["일", "월", "화", "수", "목", "금", "토"][k], num: Number(iso.slice(8, 10)) };
+      return { iso, wd: ["월", "화", "수", "목", "금", "토", "일"][k], num: Number(iso.slice(8, 10)) };
     });
   })();
 
@@ -2301,9 +3440,11 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
             {weekDays.map((d) => (
               <button key={d.iso} onClick={() => { setPick(d.iso); setMode("day"); }} className="wb-btn"
                 style={{ background: "none", border: "none", cursor: "pointer", padding: "2px 0 5px" }}>
-                <div style={{ fontSize: 9.5, color: C.faint, fontWeight: 700 }}>{d.wd}</div>
+                <div style={{ fontSize: 9.5, fontWeight: 700,
+                  color: d.wd === "일" ? C.seal : d.wd === "토" ? C.navy : C.faint }}>{d.wd}</div>
                 <div style={{ fontSize: 12.5, fontWeight: 800,
-                  color: d.iso === todayISO() ? C.navy : C.ink, fontVariantNumeric: "tabular-nums" }}>{d.num}</div>
+                  color: d.iso === todayISO() ? C.navy : d.wd === "일" ? C.seal : C.ink,
+                  fontVariantNumeric: "tabular-nums" }}>{d.num}</div>
               </button>
             ))}
           </div>
@@ -2363,7 +3504,7 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
               </div>
             </div>
             <div style={{ fontSize: 10, color: C.faint, marginTop: 6 }}>
-              빈 곳을 누르면 새 일정 · 블록을 끌면 자리 이동 · 아래 손잡이를 끌면 시간 조절
+              빈 곳을 누르면 새 일정 · 가운데를 끌면 자리 이동 · 위아래 가장자리를 끌면 시간 조절
             </div>
           </Card>
         </>
@@ -2372,7 +3513,13 @@ function PlanView({ data, rows, events, onOpenSub, hidden, onToggleHidden, onSav
       {sheet && (
         <PlanSheet init={sheet} projects={data.projects}
           onClose={() => setSheet(null)}
-          onDelete={sheet.id && sheet.kind === "event" ? () => { onDeleteEvent(sheet.id); setSheet(null); } : null}
+          onGoSub={(pid, sid) => { setSheet(null); onOpenSub(pid, sid); }}
+          onDelete={sheet.id
+            ? () => {
+                if (sheet.kind === "event") onDeleteEvent(sheet.id);
+                else onDeleteTodo(sheet.pid, sheet.sid, sheet.id);
+                setSheet(null);
+              } : null}
           onSave={(v) => { onSaveEvent(v); setSheet(null); }} />
       )}
     </div>
@@ -2764,8 +3911,8 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
                         <TimeTag item={r} />
                         <DateTag item={r} />
                         <BucketTag item={r} />
-                        <button onClick={(e) => { e.stopPropagation(); onOpen(r.pid); }}
-                          title={r.pName}
+                        <button onClick={(e) => { e.stopPropagation(); r.inbox ? onOpen(r.pid) : onOpenSub(r.pid, r.sid); }}
+                          title={r.pName + (r.sName ? " · " + r.sName : "")}
                           className="wb-btn inline-flex items-center gap-1 rounded" style={{
                             background: r.hl || "#F1F3F0", padding: "2px 6px", fontSize: 9.5,
                             fontWeight: 750, color: C.ink, border: "none", cursor: "pointer" }}>
@@ -2979,18 +4126,18 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
 
       <Fold title="완료된 할 일" count={doneRows.length} tone={C.greenSoft}>
         {doneRows.map((r) => (
-          <div key={r.id} className="flex items-start gap-1.5" style={{ padding: "3px 0" }}>
+          <div key={r.id} className="flex items-center gap-1.5" style={{ padding: "4px 0" }}>
             <button onClick={() => onUndoTodo(r.pid, r.sid, r.id)} title="되돌리기"
               className="wb-btn flex items-center justify-center rounded shrink-0"
-              style={{ width: 14, height: 14, marginTop: 2, border: "1.5px solid " + C.green,
+              style={{ width: 14, height: 14, border: "1.5px solid " + C.green,
                 background: C.green, color: "#fff", cursor: "pointer" }}>
               <Check size={10} strokeWidth={3.4} />
             </button>
             <span className="flex-1 min-w-0" style={{ fontSize: 12, lineHeight: 1.4, color: C.faint,
               textDecoration: "line-through", wordBreak: "break-word" }}>{r.text}</span>
-            <span className="shrink-0 truncate" style={{ fontSize: 9.5, color: C.faint, maxWidth: 70, marginTop: 2 }}>{shortName(r.pName)}</span>
+            <span className="shrink-0 truncate" style={{ fontSize: 9.5, color: C.faint, maxWidth: 70 }}>{shortName(r.pName)}</span>
             <button onClick={() => onPurgeTodo(r.pid, r.sid, r.id)} title="완전 삭제"
-              className="wb-btn shrink-0" style={{ background: "none", border: "none", color: "#C6CCC5", cursor: "pointer", padding: "0 2px", marginTop: 1 }}>
+              className="wb-btn shrink-0 flex items-center" style={{ background: "none", border: "none", color: "#C6CCC5", cursor: "pointer", padding: "0 2px" }}>
               <Trash2 size={12} strokeWidth={2.2} />
             </button>
           </div>
@@ -3863,13 +5010,15 @@ const Field = ({ label, hint, value, onChange, placeholder, mono }) => (
   </div>
 );
 
-function Settings({ data, onClose, flash, sync, syncState, syncMsg, lastBackup, onDownload, onSaveSync, onSyncNow, onSignIn, onImport }) {
+function Settings({ data, onClose, flash, sync, syncState, syncMsg, lastBackup, onDownload, onSaveSync, onSyncNow, onSignIn, onImport, locked, onSetLock, onClearLock }) {
   const dismiss = useDismiss(onClose);
   const [tab, setTab] = useState("sync");
   const [mode, setMode] = useState(sync.mode || "");
   const [form, setForm] = useState({ url: sync.url || "", key: sync.key || "", code: sync.code || "", clientId: sync.clientId || "" });
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const [showSql, setShowSql] = useState(false);
+  const [pw1, setPw1] = useState("");
+  const [pw2, setPw2] = useState("");
   const [noti, setNoti] = useState(() => notiSupported() && notiOn() && Notification.permission === "granted");
   const [text, setText] = useState("");
   const on = syncReady(sync);
@@ -3938,6 +5087,44 @@ function Settings({ data, onClose, flash, sync, syncState, syncMsg, lastBackup, 
                   {sync.mode === "gdrive" && syncState === "signin" && <Btn size="sm" kind="solid" icon={LogIn} onClick={onSignIn}>구글 로그인</Btn>}
                   <Btn size="sm" icon={RefreshCw} onClick={onSyncNow}>지금 확인</Btn>
                   <Btn size="sm" onClick={() => { onSaveSync({}); setMode(""); flash("동기화를 껐습니다"); }}>동기화 끄기</Btn>
+                </div>
+              )}
+            </Card>
+
+            {/* 잠금 */}
+            <Card style={{ padding: 14, marginBottom: 14 }}>
+              <div className="flex items-center gap-2 mb-1.5">
+                {locked ? <Lock size={15} color={C.green} strokeWidth={2.3} /> : <Unlock size={15} color={C.faint} strokeWidth={2.3} />}
+                <span style={{ fontSize: 14, fontWeight: 750 }}>비밀번호 잠금</span>
+                <span className="rounded-full" style={{ marginLeft: "auto", fontSize: 10.5, fontWeight: 750,
+                  padding: "2px 8px", background: locked ? C.greenSoft : "#F1F3F0", color: locked ? C.green : C.faint }}>
+                  {locked ? "켜짐" : "꺼짐"}
+                </span>
+              </div>
+              <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.55 }}>
+                화면만 가리는 것이 아니라 <b style={{ color: C.ink }}>저장되는 내용 자체를 잠급니다.</b>
+                기기와 클라우드 양쪽에 암호문으로 저장돼, 파일을 열어도 내용이 보이지 않습니다.
+              </div>
+              {!locked ? (
+                <div className="mt-3">
+                  <input type="password" value={pw1} onChange={(e) => setPw1(e.target.value)} placeholder="비밀번호"
+                    className="w-full rounded-lg" style={{ padding: "9px 11px", fontSize: 13.5, border: "1px solid " + C.rule,
+                      background: C.surface, outline: "none", color: C.ink, marginBottom: 6 }} />
+                  <input type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} placeholder="한 번 더"
+                    className="w-full rounded-lg" style={{ padding: "9px 11px", fontSize: 13.5, border: "1px solid " + C.rule,
+                      background: C.surface, outline: "none", color: C.ink, marginBottom: 8 }} />
+                  <div style={{ fontSize: 11.5, color: C.seal, lineHeight: 1.55, marginBottom: 8 }}>
+                    잊으면 되살릴 수 없습니다. 켜기 전에 <b>백업 파일을 꼭 받아 두세요.</b>
+                  </div>
+                  <Btn kind="solid" full icon={Lock}
+                    disabled={pw1.length < 4 || pw1 !== pw2}
+                    onClick={() => onSetLock(pw1)}>
+                    {pw1 && pw1 !== pw2 ? "두 번 입력이 다릅니다" : pw1.length < 4 ? "4자 이상" : "잠금 켜기"}
+                  </Btn>
+                </div>
+              ) : (
+                <div className="mt-3">
+                  <Btn full icon={Unlock} onClick={onClearLock}>잠금 끄기</Btn>
                 </div>
               )}
             </Card>
