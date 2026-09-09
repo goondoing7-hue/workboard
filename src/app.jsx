@@ -267,7 +267,7 @@ const VIEW_KEY = "workboard:view";
 const lastView = () => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch (e) { return {}; } };
 const saveView = (v) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch (e) {} };
 
-const APP_VERSION = "2026.09.05";
+const APP_VERSION = "2026.09.09";
 const STORAGE_KEY = "workboard:data";
 
 /* 저장소 — 브라우저(localStorage)를 쓰고, Claude 아티팩트 안에서는 그쪽 저장소를 씁니다 */
@@ -339,20 +339,38 @@ const dueText = (t) => {
   return `${fmtDateK(t.due)}${tt ? " · " + tt : ""} · ${dLabel(t.due)}`;
 };
 /* 날짜 → 시각 순. 시간 없는 항목은 그날의 맨 뒤로 */
-/* 오늘 · 내일 · 다음 세 칸으로 나눕니다 */
+/* 지남 · 오늘 · 내일 · 다음 */
 const BUCKETS = [
-  { k: 0, t: "오늘", bg: "#FBEDEA", fg: "#C2402F" },
-  { k: 1, t: "내일", bg: "#FAF1E0", fg: "#B0731F" },
-  { k: 2, t: "다음", bg: "#F1F3F0", fg: "#6C7570" },
+  { k: 0, t: "지남", bg: "#FBEDEA", fg: "#C2402F" },
+  { k: 1, t: "오늘", bg: "#FAF1E0", fg: "#B0731F" },
+  { k: 2, t: "내일", bg: "#EEF3F8", fg: "#24486B" },
+  { k: 3, t: "다음", bg: "#F1F3F0", fg: "#6C7570" },
 ];
 const bucketOf = (t) => {
   const d = dayDiff(t.due);
-  if (d === null) return 2;
-  if (d <= 0) return 0;
-  if (d === 1) return 1;
-  return 2;
+  if (d === null) return 3;
+  if (d < 0) return 0;
+  if (d === 0) return 1;
+  if (d === 1) return 2;
+  return 3;
 };
-const setBucket = (k) => (k === 0 ? { due: todayISO() } : k === 1 ? { due: addDays(1) } : { due: "", dueTime: "", dueEnd: "" });
+const setBucket = (k) => (k === 1 ? { due: todayISO() } : k === 2 ? { due: addDays(1) } : { due: "", dueTime: "", dueEnd: "" });
+
+/* 사업 이름을 짧게 */
+const SHORT = { "집중심리클리닉": "집클", "특별교육": "특별", "수강명령": "수강", "수강신청": "수강", "기타": "기타" };
+/* 지금 시각을 지났는지 */
+const nowMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
+const minOf = (t) => (t.dueTime ? Number(t.dueTime.slice(0, 2)) * 60 + Number(t.dueTime.slice(3, 5)) : null);
+const isPast = (t) => {
+  const d = dayDiff(t.due);
+  if (d === null) return false;
+  if (d < 0) return true;
+  if (d > 0) return false;
+  const m = minOf(t);
+  return m !== null && m < nowMin();
+};
+
+const shortName = (n) => SHORT[n] || (n || "").slice(0, 3);
 
 const sortKey = (t) => `${t.due}T${t.dueTime || "99:99"}`;
 const byTime = (a, b) => sortKey(a).localeCompare(sortKey(b));
@@ -799,8 +817,11 @@ const DocPanel = ({ sub, onToggleDoc, onSetDocMode }) => {
 /* ------------------------------------------------------------------
    메인보드
 ------------------------------------------------------------------- */
-function HomeView({ data, rows, onDone, onOpenSub, onOpenProject, onGo, onAddMemo }) {
+function HomeView({ data, rows, onDone, onEditTodo, onOpenSub, onOpenProject, onGo, onAddMemo }) {
   const [now, setNow] = useState(new Date());
+  const [showMissed, setShowMissed] = useState(false);
+  const [editNow, setEditNow] = useState(false);
+  const [draftNow, setDraftNow] = useState("");
   useEffect(() => { const t = setInterval(() => setNow(new Date()), 20000); return () => clearInterval(t); }, []);
 
   const hh = now.getHours();
@@ -809,8 +830,10 @@ function HomeView({ data, rows, onDone, onOpenSub, onOpenProject, onGo, onAddMem
   const timeStr = now.toLocaleTimeString("ko-KR", { hour: "numeric", minute: "2-digit" });
 
   const sorted = [...rows].sort((a, b) => bucketOf(a) - bucketOf(b) || sortKey(a).localeCompare(sortKey(b)));
-  const nowTodo = sorted[0] || null;
-  const nextUp = sorted.slice(1, 4);
+  const missed = sorted.filter(isPast);
+  const upcoming = sorted.filter((r) => !isPast(r));
+  const nowTodo = upcoming[0] || null;
+  const nextUp = upcoming.slice(1, 4);
 
   const overdue = rows.filter((r) => dayDiff(r.due) < 0);
   const today = rows.filter((r) => dayDiff(r.due) === 0);
@@ -826,7 +849,24 @@ function HomeView({ data, rows, onDone, onOpenSub, onOpenProject, onGo, onAddMem
     }),
   })).filter((x) => x.subs.length > 0);
 
-  /* 이번 주 월~금 */
+  /* 오늘부터 앞으로 5일치 일정 */
+  const agenda = (() => {
+    const out = [];
+    for (let k = 0; k < 6; k++) {
+      const d = new Date(now);
+      d.setDate(d.getDate() + k);
+      d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+      const iso = d.toISOString().slice(0, 10);
+      const items = rows.filter((r) => r.due === iso && !(k === 0 && isPast(r)))
+        .sort((a, b) => (a.dueTime || "99:99").localeCompare(b.dueTime || "99:99"));
+      if (!items.length) continue;
+      const wd = ["일", "월", "화", "수", "목", "금", "토"][new Date(iso + "T00:00:00").getDay()];
+      out.push({ iso, items,
+        label: Number(iso.slice(5, 7)) + "월 " + Number(iso.slice(8, 10)) + "일 (" + wd + ")" + (k === 0 ? ", 오늘" : k === 1 ? ", 내일" : "") });
+    }
+    return out.slice(0, 5);
+  })();
+
   const monday = (() => {
     const d = new Date(now);
     const wd = (d.getDay() + 6) % 7;         /* 월=0 */
@@ -869,7 +909,13 @@ function HomeView({ data, rows, onDone, onOpenSub, onOpenProject, onGo, onAddMem
 
       {/* 지금 할 일 하나 */}
       <Card style={{ padding: "16px 17px" }}>
-        <Label>지금 할 일</Label>
+        <div className="flex items-center gap-2">
+          <Label>지금 할 일</Label>
+          {nowTodo && nowTodo.hl && (
+            <span className="rounded" style={{ width: 12, height: 12, background: nowTodo.hl,
+              border: "1.5px solid " + C.rule, marginLeft: "auto" }} title={nowTodo.sName} />
+          )}
+        </div>
         {!nowTodo ? (
           <div style={{ fontSize: 14, color: C.faint, padding: "14px 0 4px" }}>남은 할 일이 없습니다</div>
         ) : (
@@ -878,8 +924,26 @@ function HomeView({ data, rows, onDone, onOpenSub, onOpenProject, onGo, onAddMem
               <button onClick={() => onDone(nowTodo)} className="wb-btn flex items-center justify-center rounded-lg shrink-0"
                 style={{ width: 26, height: 26, marginTop: 2, border: "2px solid #C6CCC5", background: "transparent", cursor: "pointer" }} />
               <div className="flex-1 min-w-0">
-                <div style={{ fontSize: 19, fontWeight: 750, lineHeight: 1.35, letterSpacing: "-0.02em",
-                  wordBreak: "break-word", whiteSpace: "pre-wrap" }}>{nowTodo.text}</div>
+                {editNow ? (
+                  <textarea value={draftNow} autoFocus rows={Math.max(1, draftNow.split("\n").length)}
+                    onChange={(e) => setDraftNow(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") { setEditNow(false); return; }
+                      if (e.key !== "Enter" || e.altKey) return;
+                      e.preventDefault();
+                      const t = draftNow.trim();
+                      if (t) onEditTodo(nowTodo.pid, nowTodo.sid, nowTodo.id, t);
+                      setEditNow(false);
+                    }}
+                    onBlur={() => { const t = draftNow.trim(); if (t) onEditTodo(nowTodo.pid, nowTodo.sid, nowTodo.id, t); setEditNow(false); }}
+                    className="w-full rounded-lg"
+                    style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.35, color: C.ink, background: "#F7F8F6",
+                      border: "1px solid " + C.rule, outline: "none", resize: "none", padding: "5px 7px", fontFamily: FONT }} />
+                ) : (
+                  <div onClick={() => { setDraftNow(nowTodo.text); setEditNow(true); }}
+                    style={{ fontSize: 19, fontWeight: 750, lineHeight: 1.35, letterSpacing: "-0.02em",
+                      wordBreak: "break-word", whiteSpace: "pre-wrap", cursor: "text" }}>{nowTodo.text}</div>
+                )}
                 <div className="flex items-center gap-1.5 mt-2 flex-wrap">
                   <BucketTag item={nowTodo} />
                   {timeText(nowTodo) && (
@@ -896,6 +960,28 @@ function HomeView({ data, rows, onDone, onOpenSub, onOpenProject, onGo, onAddMem
                 </div>
               </div>
             </div>
+
+            {missed.length > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <button onClick={() => setShowMissed(!showMissed)} className="wb-btn w-full flex items-center gap-1.5"
+                  style={{ background: "none", border: "none", padding: "6px 0 0", cursor: "pointer" }}>
+                  <AlertTriangle size={12} color={C.seal} strokeWidth={2.5} />
+                  <Label style={{ color: C.seal }}>놓친 할 일 {missed.length}</Label>
+                  <ChevronRight size={13} color={C.faint}
+                    style={{ marginLeft: "auto", transform: showMissed ? "rotate(90deg)" : "none", transition: "transform .15s ease" }} />
+                </button>
+                {showMissed && missed.map((r) => (
+                  <div key={r.id} className="flex items-center gap-2" style={{ padding: "4px 0" }}>
+                    <button onClick={() => onDone(r)} className="wb-btn flex items-center justify-center rounded shrink-0"
+                      style={{ width: 14, height: 14, border: "1.5px solid #C6CCC5", background: "transparent", cursor: "pointer" }} />
+                    <span className="flex-1 min-w-0 truncate" style={{ fontSize: 12.5, color: C.muted }}>{r.text}</span>
+                    <span className="shrink-0" style={{ fontSize: 10, color: C.seal, fontWeight: 750 }}>
+                      {fmtDateShort(r.due)}{r.dueTime ? " " + r.dueTime : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {nextUp.length > 0 && (
               <div style={{ marginTop: 14, borderTop: "1px solid " + C.rule, paddingTop: 9 }}>
@@ -927,40 +1013,43 @@ function HomeView({ data, rows, onDone, onOpenSub, onOpenProject, onGo, onAddMem
         <Stat n={data.memos.length} t="적어둠" tone="navy" onClick={() => onGo("projects")} />
       </div>
 
-      {/* 이번 주 */}
+      {/* 오늘의 비서 */}
       <Card style={{ padding: "13px 14px" }}>
-        <div className="flex items-center gap-2 mb-2.5">
-          <CalendarDays size={14} color={C.navy} strokeWidth={2.3} />
-          <Label>이번 주</Label>
-
+        <div className="flex items-center gap-2 mb-2">
+          <Sunrise size={14} color={C.navy} strokeWidth={2.3} />
+          <Label>오늘의 비서</Label>
+          <button onClick={() => onGo("plan")} className="wb-btn inline-flex items-center"
+            style={{ background: "none", border: "none", color: C.faint, fontSize: 11, fontWeight: 650, cursor: "pointer", marginLeft: "auto" }}>
+            일정 전체 <ChevronRight size={12} />
+          </button>
         </div>
-        <div className="grid grid-cols-5" style={{ gap: 5 }}>
-          {days.map((d) => (
-            <div key={d.iso} className="rounded-lg" style={{
-              background: d.isToday ? C.navySoft : "#FBFCFA",
-              border: "1px solid " + (d.isToday ? "#C6D6E5" : C.rule), padding: "6px 5px", minHeight: 78 }}>
-              <div className="flex items-baseline gap-1" style={{ marginBottom: 4 }}>
-                <span style={{ fontSize: 10.5, fontWeight: 800, color: d.isToday ? C.navy : C.faint }}>{d.label}</span>
-                <span style={{ fontSize: 9.5, color: C.faint, fontVariantNumeric: "tabular-nums" }}>{d.num}</span>
-              </div>
-              {d.items.length === 0 ? (
-                <div style={{ fontSize: 9.5, color: "#C2C8C0" }}>—</div>
-              ) : d.items.slice(0, 4).map((r) => (
-                <button key={r.id} onClick={() => onOpenSub(r.pid, r.sid)} className="wb-btn w-full text-left rounded"
-                  style={{ background: r.hl || "#F1F3F0", border: "none", padding: "2px 4px",
-                    marginBottom: 3, cursor: "pointer", display: "block" }}>
-                  {r.dueTime && (
-                    <div style={{ fontSize: 8.5, fontWeight: 750, color: C.muted, fontVariantNumeric: "tabular-nums" }}>{r.dueTime}</div>
-                  )}
-                  <div className="truncate" style={{ fontSize: 10, color: C.ink, lineHeight: 1.3 }}>{r.text}</div>
-                </button>
-              ))}
-              {d.items.length > 4 && (
-                <div style={{ fontSize: 9, color: C.faint }}>외 {d.items.length - 4}</div>
-              )}
+        {agenda.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: C.faint, padding: "8px 0" }}>앞으로 예정된 일정이 없습니다</div>
+        ) : agenda.map((g) => (
+          <div key={g.iso} style={{ marginTop: 4 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 800, color: C.ink, padding: "7px 0 3px" }}>
+              {g.label}
             </div>
-          ))}
-        </div>
+            {g.items.map((r) => (
+              <button key={r.id} onClick={() => onOpenSub(r.pid, r.sid)}
+                className="wb-btn w-full flex items-start gap-2 text-left"
+                style={{ background: "none", border: "none", borderTop: "1px solid " + C.rule,
+                  padding: "7px 0", cursor: "pointer" }}>
+                <span className="shrink-0 rounded" style={{ width: 3, height: 15, background: r.pColor, marginTop: 2 }} />
+                {r.dueTime && (
+                  <span className="shrink-0" style={{ fontSize: 12, fontWeight: 750, color: C.ink,
+                    fontVariantNumeric: "tabular-nums", minWidth: 38 }}>{r.dueTime}</span>
+                )}
+                <span className="flex-1 min-w-0">
+                  <span className="block truncate" style={{ fontSize: 12.5, color: C.ink }}>{r.text}</span>
+                  <span className="block truncate" style={{ fontSize: 10, color: C.faint }}>
+                    {shortName(r.pName)} · {r.sName}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        ))}
       </Card>
 
       {/* 진행 중인 세부사업 — 사업별 */}
@@ -1020,14 +1109,14 @@ function HomeView({ data, rows, onDone, onOpenSub, onOpenProject, onGo, onAddMem
    메인
 ------------------------------------------------------------------- */
 export default function WorkBoard() {
-  const [data, setDataRaw] = useState({ projects: [], memos: [], notes: [], dueOrder: [], topOrder: [], dueManual: false, updatedAt: 0 });
+  const [data, setDataRaw] = useState({ projects: [], memos: [], notes: [], dueOrder: [], topOrder: [], planHidden: [], dueManual: false, updatedAt: 0 });
   const [loaded, setLoaded] = useState(false);
   const [storageOK, setStorageOK] = useState(true);
   const [sync, setSync] = useState(() => loadSync());
   const [syncState, setSyncState] = useState("off");   // off | syncing | ok | error
   const [syncMsg, setSyncMsg] = useState("");
   const [lastBackup, setLastBackup] = useState(() => Number(localStorage.getItem(BACKUP_KEY) || 0));
-  const [tab, setTab] = useState(() => (["home", "projects", "notes"].includes(lastView().tab) ? lastView().tab : "home"));
+  const [tab, setTab] = useState(() => (["home", "projects", "plan", "notes"].includes(lastView().tab) ? lastView().tab : "home"));
   const [openProject, setOpenProject] = useState(() => lastView().pid || null);
   const [openSub, setOpenSub] = useState(() => lastView().sid || null);
   const [showSettings, setShowSettings] = useState(false);
@@ -1045,7 +1134,7 @@ export default function WorkBoard() {
   });
 
   const normalize = (p) => ({
-    projects: p.projects || [], memos: p.memos || [], notes: p.notes || [], dueOrder: p.dueOrder || [], topOrder: p.topOrder || [],
+    projects: p.projects || [], memos: p.memos || [], notes: p.notes || [], dueOrder: p.dueOrder || [], topOrder: p.topOrder || [], planHidden: p.planHidden || [],
     dueManual: !!p.dueManual, updatedAt: p.updatedAt || 0,
   });
 
@@ -1351,7 +1440,7 @@ export default function WorkBoard() {
     : sub ? { title: sub.name, sup: project.name, back: () => setOpenSub(null), color: colorOf(project, projectIdx) }
     : project ? { title: project.name, sup: "사업", back: () => setOpenProject(null), color: colorOf(project, projectIdx) } : null;
 
-  const titleOf = { home: "메인보드", projects: "사업 관리", notes: "메모함" }[tab] || "메인보드";
+  const titleOf = { home: "메인보드", projects: "사업 관리", plan: "일정", notes: "메모함" }[tab] || "메인보드";
 
   return (
     <div style={{ fontFamily: FONT, background: C.bg, minHeight: "100vh", color: C.ink }}>
@@ -1458,7 +1547,9 @@ export default function WorkBoard() {
           )}
 
           {tab === "home" && (
-            <HomeView data={data} rows={homeRows} onDone={doneRow} onOpenSub={openSubPage}
+            <HomeView data={data} rows={homeRows} onDone={doneRow}
+              onEditTodo={(pid, sid, tid, text) => patchTodo(pid, sid, tid, { text })}
+              onOpenSub={openSubPage}
               onOpenProject={(pid) => { setTab("projects"); setOpenProject(pid); setOpenSub(null); }}
               onGo={(t) => { setTab(t); if (t === "projects") { setOpenProject(null); setOpenSub(null); } }}
               onAddMemo={(t) => { addMemo(t); flash("사업 화면에 담았습니다"); }} />
@@ -1485,6 +1576,12 @@ export default function WorkBoard() {
               })}
               onAssign={assignTodo}
               onUndoTodo={(pid, sid, tid) => patchTodo(pid, sid, tid, { done: false })}
+              onPurgeTodo={(pid, sid, tid) => {
+                const sub2 = data.projects.find((x) => x.id === pid)?.subs.find((x) => x.id === sid);
+                const item = sub2 && sub2.todos.find((t) => t.id === tid);
+                mapSub(pid, sid, (s2) => ({ ...s2, todos: s2.todos.filter((t) => t.id !== tid) }));
+                flash("삭제했습니다", () => item && mapSub(pid, sid, (s2) => ({ ...s2, todos: [...s2.todos, item] })));
+              }}
               onMoveTodoTo={(fromPid, fromSid, tid, toPid, toSid) => {
                 let item = null;
                 setProjects((ps) => ps.map((pr) => {
@@ -1569,6 +1666,15 @@ export default function WorkBoard() {
               onReorderTodos={(openNext) => mapSub(project.id, sub.id, (s) => ({ ...s, todos: [...openNext, ...s.todos.filter((t) => t.done)] }))} />
           )}
 
+          {tab === "plan" && (
+            <PlanView data={data} rows={homeRows} onOpenSub={openSubPage}
+              hidden={data.planHidden || []}
+              onToggleHidden={(pid) => setData((d) => {
+                const h = d.planHidden || [];
+                return { ...d, planHidden: h.includes(pid) ? h.filter((x) => x !== pid) : [...h, pid] };
+              })} />
+          )}
+
           {tab === "notes" && (
             <NotesView notes={data.notes || []} projects={data.projects}
               onAdd={addNote} onPatch={patchNote} onDelete={removeNote}
@@ -1583,6 +1689,7 @@ export default function WorkBoard() {
         <div className="flex" style={{ maxWidth: 760, margin: "0 auto", padding: "8px 8px 14px" }}>
           {[{ k: "home", t: "메인", i: LayoutGrid, badge: 0 },
             { k: "projects", t: "사업", i: FolderClosed, badge: 0 },
+            { k: "plan", t: "일정", i: CalendarDays, badge: 0 },
             { k: "notes", t: "메모함", i: StickyNote, badge: 0 }].map((x) => {
             const on = tab === x.k;
             return (
@@ -1642,12 +1749,178 @@ export default function WorkBoard() {
 }
 
 /* ------------------------------------------------------------------
+   일정 — 사업별로 골라 보는 시간표
+------------------------------------------------------------------- */
+function PlanView({ data, rows, onOpenSub, hidden, onToggleHidden }) {
+  const [base, setBase] = useState(todayISO());
+  const [pick, setPick] = useState(todayISO());
+
+  /* 일~토 한 주 */
+  const weekStart = (() => {
+    const d = new Date(base + "T00:00:00");
+    d.setDate(d.getDate() - d.getDay());
+    return d;
+  })();
+  const week = [0, 1, 2, 3, 4, 5, 6].map((k) => {
+    const d = new Date(weekStart);
+    d.setDate(d.getDate() + k);
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    const iso = d.toISOString().slice(0, 10);
+    return { iso, wd: ["일", "월", "화", "수", "목", "금", "토"][k], num: Number(iso.slice(8, 10)) };
+  });
+
+  const shift = (n) => {
+    const d = new Date(base + "T00:00:00");
+    d.setDate(d.getDate() + n * 7);
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    setBase(d.toISOString().slice(0, 10));
+  };
+
+  const visible = rows.filter((r) => !hidden.includes(r.pid));
+  const dayRows = visible.filter((r) => r.due === pick);
+  const timed = dayRows.filter((r) => r.dueTime).sort((a, b) => a.dueTime.localeCompare(b.dueTime));
+  const allDay = dayRows.filter((r) => !r.dueTime);
+
+  /* 시간표는 가장 이른 일정 한 시간 전부터 */
+  const first = timed.length ? Number(timed[0].dueTime.slice(0, 2)) : 9;
+  const last = timed.length ? Math.max(...timed.map((r) => Number((r.dueEnd || r.dueTime).slice(0, 2)))) : 18;
+  const from = Math.max(0, Math.min(first, 9) - 1);
+  const to = Math.min(23, Math.max(last + 1, 19));
+  const hours = [];
+  for (let h = from; h <= to; h++) hours.push(h);
+
+  const atHour = (h) => timed.filter((r) => Number(r.dueTime.slice(0, 2)) === h);
+  const cnt = (iso) => visible.filter((r) => r.due === iso).length;
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* 사업 고르기 */}
+      <Card style={{ padding: "11px 13px" }}>
+        <Label>표시할 일정</Label>
+        <div className="flex flex-col gap-1 mt-2">
+          <div className="flex items-center gap-2" style={{ padding: "3px 0" }}>
+            <span className="rounded" style={{ width: 4, height: 14, background: C.navy }} />
+            <span style={{ fontSize: 12.5, fontWeight: 750 }}>센터 일정</span>
+            <span style={{ fontSize: 10.5, color: C.faint, marginLeft: "auto" }}>전체 {visible.length}</span>
+          </div>
+          {data.projects.map((p, i) => {
+            const off = hidden.includes(p.id);
+            const c = colorOf(p, i);
+            return (
+              <button key={p.id} onClick={() => onToggleHidden(p.id)}
+                className="wb-btn flex items-center gap-2 text-left"
+                style={{ background: "none", border: "none", padding: "3px 0", cursor: "pointer", opacity: off ? 0.45 : 1 }}>
+                <span className="flex items-center justify-center rounded shrink-0"
+                  style={{ width: 15, height: 15, background: off ? "transparent" : c,
+                    border: "1.5px solid " + (off ? "#C6CCC5" : c), color: "#fff" }}>
+                  {!off && <Check size={10} strokeWidth={3.4} />}
+                </span>
+                <span className="truncate" style={{ fontSize: 12.5, color: C.ink }}>{p.name}</span>
+                <span className="shrink-0" style={{ fontSize: 10.5, color: C.faint, marginLeft: "auto" }}>
+                  {rows.filter((r) => r.pid === p.id).length}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* 주 이동 */}
+      <Card style={{ padding: "10px 11px" }}>
+        <div className="flex items-center justify-between mb-2">
+          <button onClick={() => shift(-1)} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 3 }}>
+            <ChevronLeft size={16} />
+          </button>
+          <span style={{ fontSize: 12.5, fontWeight: 750 }}>
+            {Number(week[0].iso.slice(5, 7))}월 {week[0].num}일 – {Number(week[6].iso.slice(5, 7))}월 {week[6].num}일
+          </span>
+          <button onClick={() => shift(1)} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 3 }}>
+            <ChevronRight size={16} />
+          </button>
+        </div>
+        <div className="grid grid-cols-7" style={{ gap: 3 }}>
+          {week.map((d) => {
+            const on = d.iso === pick;
+            const isToday = d.iso === todayISO();
+            const n = cnt(d.iso);
+            return (
+              <button key={d.iso} onClick={() => setPick(d.iso)} className="wb-btn rounded-lg"
+                style={{ padding: "5px 2px", cursor: "pointer",
+                  background: on ? C.navy : isToday ? C.navySoft : "transparent",
+                  border: "1px solid " + (on ? C.navy : "transparent") }}>
+                <div style={{ fontSize: 9.5, fontWeight: 700, color: on ? "rgba(255,255,255,0.75)" : C.faint }}>{d.wd}</div>
+                <div style={{ fontSize: 14, fontWeight: 800, color: on ? "#fff" : isToday ? C.navy : C.ink,
+                  fontVariantNumeric: "tabular-nums", lineHeight: 1.2 }}>{d.num}</div>
+                <div style={{ height: 4, marginTop: 2 }}>
+                  {n > 0 && <span className="rounded-full" style={{ display: "inline-block", width: 4, height: 4,
+                    background: on ? "#fff" : C.navy }} />}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* 종일 */}
+      {allDay.length > 0 && (
+        <Card style={{ padding: "10px 13px" }}>
+          <Label>시간 미정 {allDay.length}</Label>
+          <div style={{ marginTop: 5 }}>
+            {allDay.map((r) => (
+              <button key={r.id} onClick={() => onOpenSub(r.pid, r.sid)} className="wb-btn w-full flex items-center gap-2 text-left"
+                style={{ background: "none", border: "none", padding: "4px 0", cursor: "pointer" }}>
+                <span className="shrink-0 rounded" style={{ width: 3, height: 13, background: r.pColor }} />
+                <span className="flex-1 min-w-0 truncate" style={{ fontSize: 12.5 }}>{r.text}</span>
+                <span className="shrink-0" style={{ fontSize: 10, color: C.faint }}>{shortName(r.pName)}</span>
+              </button>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* 시간표 */}
+      <Card style={{ padding: "8px 11px 12px" }}>
+        {timed.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: C.faint, padding: "14px 0", textAlign: "center" }}>
+            이 날 시간이 정해진 일정이 없습니다
+          </div>
+        ) : hours.map((h) => {
+          const list = atHour(h);
+          return (
+            <div key={h} className="flex items-start gap-2" style={{ borderTop: "1px solid " + C.rule, minHeight: 30, padding: "3px 0" }}>
+              <span className="shrink-0" style={{ fontSize: 10, color: C.faint, width: 30, marginTop: 3,
+                fontVariantNumeric: "tabular-nums" }}>
+                {String(h).padStart(2, "0")}:00
+              </span>
+              <div className="flex-1 min-w-0">
+                {list.map((r) => (
+                  <button key={r.id} onClick={() => onOpenSub(r.pid, r.sid)}
+                    className="wb-btn w-full text-left rounded-lg"
+                    style={{ background: r.hl || C.navySoft, border: "none", borderLeft: "3px solid " + r.pColor,
+                      padding: "5px 8px", marginBottom: 3, cursor: "pointer", display: "block" }}>
+                    <div style={{ fontSize: 10, fontWeight: 750, color: C.muted, fontVariantNumeric: "tabular-nums" }}>
+                      {timeText(r)}
+                    </div>
+                    <div className="truncate" style={{ fontSize: 12.5, color: C.ink }}>{r.text}</div>
+                    <div className="truncate" style={{ fontSize: 9.5, color: C.faint }}>{shortName(r.pName)} · {r.sName}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </Card>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------
    사업 — 위: 취합 목록 · 가운데: 폴더 · 아래: 적어 두는 칸
 ------------------------------------------------------------------- */
 const STARTER = ["집중심리클리닉", "특별교육", "수강명령", "기타"];
 
 /* 한 줄짜리 할 일 — 눌러서 수정, Ctrl+↑↓ 로 이동 */
-function MiniTodo({ todo, no, tag, right, onToggle, onEdit, onMove, onAddAfter, onRemoveEmpty, dense, autoEdit }) {
+function MiniTodo({ todo, no, noRed, tag, right, onToggle, onEdit, onMove, onAddAfter, onRemoveEmpty, dense, autoEdit }) {
   const [editing, setEditing] = useState(!!autoEdit);
   const [draft, setDraft] = useState(todo.text);
   const ref = useRef(null);
@@ -1694,7 +1967,8 @@ function MiniTodo({ todo, no, tag, right, onToggle, onEdit, onMove, onAddAfter, 
         style={{ width: dense ? 14 : 16, height: dense ? 14 : 16, marginTop: 2,
           border: "1.5px solid #C6CCC5", background: "transparent", cursor: "pointer" }} />
       {no != null && (
-        <span className="shrink-0" style={{ fontSize: dense ? 10 : 11, fontWeight: 800, color: C.faint,
+        <span className="shrink-0" style={{ fontSize: dense ? 10 : 11, fontWeight: 800,
+          color: noRed ? C.seal : C.faint,
           minWidth: 13, marginTop: 1, fontVariantNumeric: "tabular-nums", textAlign: "right" }}>{no}</span>
       )}
       {editing ? (
@@ -1762,6 +2036,16 @@ const TimeTag = ({ item }) => {
   );
 };
 
+const DateTag = ({ item }) => {
+  if (!item.due) return null;
+  return (
+    <span className="shrink-0" style={{ fontSize: 9.5, fontWeight: 700, color: C.faint,
+      marginTop: 2, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+      {fmtDateShort(item.due)}
+    </span>
+  );
+};
+
 const BucketTag = ({ item }) => {
   const b = BUCKETS[bucketOf(item)];
   return (
@@ -1775,7 +2059,7 @@ const BucketTag = ({ item }) => {
 /* 오늘 / 내일 / 다음 을 바로 고르는 단추 */
 const BucketPick = ({ item, onPick }) => (
   <span className="inline-flex items-center shrink-0 rounded" style={{ background: "#F4F6F3", padding: 1, gap: 1, marginTop: 1 }}>
-    {BUCKETS.map((b) => {
+    {BUCKETS.slice(1).map((b) => {
       const on = bucketOf(item) === b.k;
       return (
         <button key={b.k} onClick={() => onPick(setBucket(b.k))} title={b.t}
@@ -1898,7 +2182,7 @@ function QuickAdd({ onAdd, placeholder }) {
 function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoDue, onSeed,
                        onQuickTodo, onToggleTodo, onEditTodo, onMoveTodo,
                        onAssign, onCreateSub, topOrder, onTopOrder,
-                       memos, onAddMemo, onAddMemoAfter, onDropMemo, onToggleMemo, onEditMemo, onMoveMemo, onReorderMemos, onAddTodoAfter, onSetMemoDue, onMoveTodoTo, onUndoTodo }) {
+                       memos, onAddMemo, onAddMemoAfter, onDropMemo, onToggleMemo, onEditMemo, onMoveMemo, onReorderMemos, onAddTodoAfter, onSetMemoDue, onMoveTodoTo, onUndoTodo, onPurgeTodo }) {
   const [adding, setAdding] = useState(false);
   const [assign, setAssign] = useState(null);   /* {pid, kind, ...} */
   const [over, setOver] = useState(null);
@@ -1983,7 +2267,8 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
                   <GripVertical size={11} strokeWidth={2} />
                 </button>
                 <div className="flex-1 min-w-0">
-                  <MiniTodo todo={r} no={all.findIndex((x) => x.id === r.id) + 1} dense autoEdit={focusId === r.id}
+                  <MiniTodo todo={r} no={all.findIndex((x) => x.id === r.id) + 1} noRed={bucketOf(r) === 0}
+                    dense autoEdit={focusId === r.id}
                     onToggle={() => onToggleTodo(r.pid, r.sid, r.id)}
                     onEdit={(t) => onEditTodo(r.pid, r.sid, r.id, t)}
                     onMove={(d) => moveTop(r.id, d)}
@@ -1992,13 +2277,16 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
                     tag={
                       <span className="shrink-0 inline-flex items-center gap-1">
                         <TimeTag item={r} />
+                        <DateTag item={r} />
                         <BucketTag item={r} />
-                        <span className="inline-flex items-center gap-1 rounded" style={{
-                          background: r.hl || "#F1F3F0", padding: "1.5px 5px", fontSize: 9.5,
-                          fontWeight: 750, color: C.muted, maxWidth: 96 }}>
+                        <button onClick={(e) => { e.stopPropagation(); onOpen(r.pid); }}
+                          title={r.pName}
+                          className="wb-btn inline-flex items-center gap-1 rounded" style={{
+                            background: r.hl || "#F1F3F0", padding: "2px 6px", fontSize: 9.5,
+                            fontWeight: 750, color: C.ink, border: "none", cursor: "pointer" }}>
                           <Dot color={r.pColor} size={5} />
-                          <span className="truncate">{r.pName}</span>
-                        </span>
+                          {shortName(r.pName)}
+                        </button>
                       </span>
                     } />
                 </div>
@@ -2215,7 +2503,11 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
             </button>
             <span className="flex-1 min-w-0" style={{ fontSize: 12, lineHeight: 1.4, color: C.faint,
               textDecoration: "line-through", wordBreak: "break-word" }}>{r.text}</span>
-            <span className="shrink-0 truncate" style={{ fontSize: 9.5, color: C.faint, maxWidth: 90, marginTop: 2 }}>{r.pName}</span>
+            <span className="shrink-0 truncate" style={{ fontSize: 9.5, color: C.faint, maxWidth: 70, marginTop: 2 }}>{shortName(r.pName)}</span>
+            <button onClick={() => onPurgeTodo(r.pid, r.sid, r.id)} title="완전 삭제"
+              className="wb-btn shrink-0" style={{ background: "none", border: "none", color: "#C6CCC5", cursor: "pointer", padding: "0 2px", marginTop: 1 }}>
+              <Trash2 size={12} strokeWidth={2.2} />
+            </button>
           </div>
         ))}
       </Fold>
@@ -2420,11 +2712,7 @@ function SubDetail({ sub, color, onPatch, onToggleDoc, onAddTodo, onPatchTodo, o
             <ListChecks size={15} color={color} strokeWidth={2.3} /><Label>할 일</Label>
             <span style={{ fontSize: 12.5, color: C.muted, fontWeight: 650 }}>{st.todoDone}/{st.todoTotal}</span>
           </div>
-          {done.length > 0 && (
-            <button onClick={() => setShowDone(!showDone)} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, fontSize: 12.5, fontWeight: 650, cursor: "pointer" }}>
-              완료 {done.length}건 {showDone ? "접기" : "보기"}
-            </button>
-          )}
+
         </div>
 
         <AddLine placeholder="할 일을 적고 Enter" onAdd={onAddTodo} />
@@ -2446,13 +2734,27 @@ function SubDetail({ sub, color, onPatch, onToggleDoc, onAddTodo, onPatchTodo, o
                   onPatch={(patch) => onPatchTodo(t.id, patch)} onDelete={() => onDeleteTodo(t.id)} />
               </div>
             )} />
-          {showDone && done.map((t) => (
-            <div key={t.id} style={{ borderTop: "1px solid " + C.rule }}>
-              <TodoRow todo={t} onToggle={() => onPatchTodo(t.id, { done: false })} onPatch={(patch) => onPatchTodo(t.id, patch)} onDelete={() => onDeleteTodo(t.id)} />
-            </div>
-          ))}
         </div>
       </Card>
+
+      <Fold title="완료된 할 일" count={done.length} tone={C.greenSoft}>
+        {done.map((t) => (
+          <div key={t.id} className="flex items-start gap-2" style={{ padding: "4px 0" }}>
+            <button onClick={() => onPatchTodo(t.id, { done: false })} title="되돌리기"
+              className="wb-btn flex items-center justify-center rounded shrink-0"
+              style={{ width: 15, height: 15, marginTop: 2, border: "1.5px solid " + C.green,
+                background: C.green, color: "#fff", cursor: "pointer" }}>
+              <Check size={10} strokeWidth={3.4} />
+            </button>
+            <span className="flex-1 min-w-0" style={{ fontSize: 12.5, lineHeight: 1.4, color: C.faint,
+              textDecoration: "line-through", wordBreak: "break-word" }}>{t.text}</span>
+            <button onClick={() => onDeleteTodo(t.id)} title="완전 삭제"
+              className="wb-btn shrink-0" style={{ background: "none", border: "none", color: "#C6CCC5", cursor: "pointer", padding: "0 2px", marginTop: 1 }}>
+              <Trash2 size={12} strokeWidth={2.2} />
+            </button>
+          </div>
+        ))}
+      </Fold>
     </div>
   );
 }
@@ -2784,11 +3086,11 @@ function NoteEditor({ note, onPatch, onClose, onDelete, onDuplicate, projects })
                 const f = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith("image/"));
                 if (f) { e.preventDefault(); addImage(f.getAsFile()); }
               }}
-              className="wb-note rounded-xl"
-              style={{ minHeight: 170, padding: "12px 13px", fontSize: 15, lineHeight: 1.75, color: C.ink,
-                background: "rgba(255,255,255,0.6)", border: "1px solid " + C.rule, outline: "none", wordBreak: "break-word" }} />
+              className="wb-note"
+              style={{ minHeight: 180, padding: "4px 2px", fontSize: 15, lineHeight: 1.75, color: C.ink,
+                background: "transparent", border: "none", outline: "none", wordBreak: "break-word" }} />
           ) : (
-            <div className="rounded-xl" style={{ padding: "10px 12px", background: "rgba(255,255,255,0.6)", border: "1px solid " + C.rule }}>
+            <div style={{ padding: "2px 0" }}>
               <SubChecklist subs={items} onChange={setItems} />
             </div>
           )}
@@ -2962,8 +3264,7 @@ function NotesView({ notes, projects, onAdd, onPatch, onDelete, onReorder, onOpe
             return (
               <div {...handle} onClick={() => setOpenId(n.id)}
                 style={{ ...handle.style, cursor: "pointer" }}>
-                <Card style={{ padding: 0, background: noteBg(n.color), overflow: "hidden",
-                  borderLeft: info ? "3px solid " + info.color : "1px solid " + C.rule }}>
+                <Card style={{ padding: 0, background: noteBg(n.color), overflow: "hidden" }}>
 
                   {pics.length > 0 && (
                     <div className="grid" style={{ gridTemplateColumns: pics.length > 1 ? "1fr 1fr" : "1fr", gap: 1 }}>
@@ -3013,13 +3314,8 @@ function NotesView({ notes, projects, onAdd, onPatch, onDelete, onReorder, onOpe
 
                     {links.slice(0, 3).map((l) => <LinkCard key={l.url} link={l} big />)}
 
-                    <div className="flex items-center justify-between mt-2">
-                      <span style={{ fontSize: 10.5, color: C.faint }}>
-                        {new Date(n.updatedAt || n.createdAt).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" })}
-                      </span>
-                      <span className="inline-flex items-center gap-1" style={{ fontSize: 10.5, color: C.faint, fontWeight: 650 }}>
-                        <Pencil size={11} /> 눌러서 편집
-                      </span>
+                    <div style={{ fontSize: 10.5, color: C.faint, marginTop: 8 }}>
+                      {new Date(n.updatedAt || n.createdAt).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" })}
                     </div>
                   </div>
                 </Card>
