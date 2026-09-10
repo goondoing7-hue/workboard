@@ -267,7 +267,7 @@ const VIEW_KEY = "workboard:view";
 const lastView = () => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch (e) { return {}; } };
 const saveView = (v) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch (e) {} };
 
-const APP_VERSION = "2026.09.10e";
+const APP_VERSION = "2026.09.10g";
 /* ============================================================
    잠금 — 비밀번호로 내용 자체를 잠급니다.
    화면만 가리는 게 아니라 저장되는 내용이 암호문이 됩니다.
@@ -342,6 +342,22 @@ const splitList = (text) => {
 const isTouch = () => typeof window !== "undefined" && window.matchMedia
   && window.matchMedia("(pointer: coarse)").matches;
 const editTrigger = (open) => (isTouch() ? { onClick: open } : { onDoubleClick: open });
+
+/* 숫자만 넣어도 하이픈이 붙습니다 */
+const fmtPhone = (v) => {
+  const d = String(v || "").replace(/\D/g, "").slice(0, 11);
+  if (!d) return "";
+  if (d.startsWith("02")) {
+    if (d.length <= 2) return d;
+    if (d.length <= 5) return d.slice(0, 2) + "-" + d.slice(2);
+    if (d.length <= 9) return d.slice(0, 2) + "-" + d.slice(2, 5) + "-" + d.slice(5);
+    return d.slice(0, 2) + "-" + d.slice(2, 6) + "-" + d.slice(6, 10);
+  }
+  if (d.length <= 3) return d;
+  if (d.length <= 7) return d.slice(0, 3) + "-" + d.slice(3);
+  if (d.length <= 10) return d.slice(0, 3) + "-" + d.slice(3, 6) + "-" + d.slice(6);
+  return d.slice(0, 3) + "-" + d.slice(3, 7) + "-" + d.slice(7, 11);
+};
 
 const toHM2 = (m) => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
 
@@ -485,8 +501,8 @@ const Btn = ({ children, onClick, kind = "ghost", size = "md", icon: Icon, full,
   );
 };
 
-const Card = ({ children, style }) => (
-  <div className="rounded-2xl" style={{ background: C.surface, border: "1px solid " + C.rule, boxShadow: "0 1px 2px rgba(26,33,30,0.04)", ...style }}>{children}</div>
+const Card = ({ children, style, innerRef }) => (
+  <div ref={innerRef} className="rounded-2xl" style={{ background: C.surface, border: "1px solid " + C.rule, boxShadow: "0 1px 2px rgba(26,33,30,0.04)", ...style }}>{children}</div>
 );
 
 /* 바깥을 눌러 닫기 — 단, 누르기 시작한 곳도 바깥이어야 합니다.
@@ -1235,13 +1251,7 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
 
       {/* 지금 할 일 하나 */}
       <Card style={{ padding: "16px 17px" }}>
-        <div className="flex items-center gap-2">
-          <Label>지금 할 일</Label>
-          {nowTodo && nowTodo.hl && (
-            <span className="rounded" style={{ width: 12, height: 12, background: nowTodo.hl,
-              border: "1.5px solid " + C.rule, marginLeft: "auto" }} title={nowTodo.sName} />
-          )}
-        </div>
+        <Label>지금 할 일</Label>
         {!nowTodo ? (
           <div style={{ fontSize: 14, color: C.faint, padding: "14px 0 4px" }}>남은 할 일이 없습니다</div>
         ) : (
@@ -2227,15 +2237,15 @@ function ContactSheet({ init, projects, onSave, onDelete, onClose }) {
         </div>
 
         <div style={{ padding: "0 16px 16px" }}>
-          <Label>이름</Label>
-          <input value={v.name} autoFocus onChange={(e) => setV({ ...v, name: e.target.value })}
-            placeholder="이름" style={{ ...inp, marginTop: 5, marginBottom: 10 }} />
+          <Label>소속</Label>
+          <input value={v.org} autoFocus onChange={(e) => setV({ ...v, org: e.target.value })}
+            placeholder="○○중학교" style={{ ...inp, marginTop: 5, marginBottom: 10 }} />
 
           <div className="flex gap-2" style={{ marginBottom: 10 }}>
             <div className="flex-1 min-w-0">
-              <Label>소속</Label>
-              <input value={v.org} onChange={(e) => setV({ ...v, org: e.target.value })}
-                placeholder="○○중학교" style={{ ...inp, marginTop: 5 }} />
+              <Label>이름</Label>
+              <input value={v.name} onChange={(e) => setV({ ...v, name: e.target.value })}
+                placeholder="이름" style={{ ...inp, marginTop: 5 }} />
             </div>
             <div style={{ width: 118 }}>
               <Label>직함</Label>
@@ -2245,8 +2255,8 @@ function ContactSheet({ init, projects, onSave, onDelete, onClose }) {
           </div>
 
           <Label>연락처</Label>
-          <input value={v.phone} onChange={(e) => setV({ ...v, phone: e.target.value })}
-            placeholder="010-0000-0000" inputMode="tel" style={{ ...inp, marginTop: 5, marginBottom: 10 }} />
+          <input value={v.phone} onChange={(e) => setV({ ...v, phone: fmtPhone(e.target.value) })}
+            placeholder="숫자만 넣으면 됩니다" inputMode="tel" style={{ ...inp, marginTop: 5, marginBottom: 10 }} />
 
           <Label>이메일</Label>
           <input value={v.email} onChange={(e) => setV({ ...v, email: e.target.value })}
@@ -2362,15 +2372,14 @@ function ContactsView({ data, onSave, onDelete }) {
                   <span className="flex items-center justify-center rounded-full shrink-0"
                     style={{ width: 30, height: 30, background: nfo ? nfo.color : "#F1F3F0",
                       color: nfo ? "#fff" : C.muted, fontSize: 12.5, fontWeight: 800 }}>
-                    {c.name.slice(0, 1)}
+                    {(c.org || c.name).slice(0, 1)}
                   </span>
                   <span className="flex-1 min-w-0">
-                    <span className="flex items-center gap-1.5">
-                      <span style={{ fontSize: 14, fontWeight: 700 }}>{c.name}</span>
-                      {c.role && <span style={{ fontSize: 11, color: C.faint }}>{c.role}</span>}
+                    <span className="block truncate" style={{ fontSize: 14, fontWeight: 700 }}>
+                      {c.org || c.name}
                     </span>
                     <span className="block truncate" style={{ fontSize: 11.5, color: C.muted, marginTop: 1 }}>
-                      {[c.org, c.phone].filter(Boolean).join(" · ")}
+                      {[c.org ? c.name : "", c.role, c.phone].filter(Boolean).join(" · ")}
                     </span>
                   </span>
                   {nfo && (
@@ -2520,8 +2529,8 @@ function ClientSheet({ init, onSave, onDelete, onClose }) {
           </div>
 
           <Label>연락처</Label>
-          <input value={v.phone} onChange={(e) => setV({ ...v, phone: e.target.value })}
-            placeholder="010-0000-0000" inputMode="tel" style={{ ...inp, marginTop: 5, marginBottom: 10 }} />
+          <input value={v.phone} onChange={(e) => setV({ ...v, phone: fmtPhone(e.target.value) })}
+            placeholder="숫자만 넣으면 됩니다" inputMode="tel" style={{ ...inp, marginTop: 5, marginBottom: 10 }} />
 
           <Label>주호소 문제</Label>
           <textarea value={v.issue} onChange={(e) => setV({ ...v, issue: e.target.value.slice(0, 200) })}
@@ -3234,6 +3243,8 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
 
   /* 끌어서 시간 조절 · 자리 이동 — 잡은 지점과 어긋나지 않게 간격을 기억합니다 */
   const [drag, setDrag] = useState(null);
+  const movedRef = useRef(false);
+  const fromRef = useRef({ x: 0, y: 0 });
 
   const colAt = (cx, cy) => {
     const el = document.elementFromPoint(cx, cy);
@@ -3247,6 +3258,9 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
   useEffect(() => {
     if (!drag) return;
     const move = (ev) => {
+      if (Math.abs(ev.clientX - fromRef.current.x) > 4 || Math.abs(ev.clientY - fromRef.current.y) > 4) {
+        movedRef.current = true;
+      }
       const col = colAt(ev.clientX, ev.clientY) || drag.col;
       if (!col) return;
       const raw = minInCol(col, ev.clientY);
@@ -3265,16 +3279,21 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
           if (st2 >= endM - 10 || st2 < 0) return cur;
           return { ...cur, start: toHM(st2) };
         }
+        if (!movedRef.current) return cur;               /* 살짝 눌린 정도는 이동이 아닙니다 */
         const start = snap(Math.max(0, raw - cur.grab));
-        return { ...cur, date, start: toHM(start), end: toHM(start + cur.dur) };
+        return { ...cur, moved: true, date, start: toHM(start), end: toHM(start + cur.dur) };
       });
     };
     const up = () => {
       setDrag((cur) => {
         if (cur) {
-          if (cur.mode === "resize" && cur.end) applyTime(cur.x, cur.x.start, cur.end);
-          else if (cur.mode === "resizeTop" && cur.start) applyTime(cur.x, cur.start, cur.x.end || toHM(toMin(cur.x.start) + 60));
-          else if (cur.mode === "move" && cur.start) moveTo(cur.x, cur.date, cur.start, cur.end);
+          if (cur.mode === "move" && !movedRef.current) {
+            setSheet({ ...cur.x, kind: cur.x.kind });      /* 그냥 누르면 정보 보기 */
+          } else if (movedRef.current) {
+            if (cur.mode === "resize" && cur.end) applyTime(cur.x, cur.x.start, cur.end);
+            else if (cur.mode === "resizeTop" && cur.start) applyTime(cur.x, cur.start, cur.x.end || toHM(toMin(cur.x.start) + 60));
+            else if (cur.mode === "move" && cur.moved) moveTo(cur.x, cur.date, cur.start, cur.end);
+          }
         }
         return null;
       });
@@ -3293,6 +3312,8 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
   const beginResize = (e, x, col, edge) => {
     e.preventDefault(); e.stopPropagation();
     if (!col) return;
+    movedRef.current = false;
+    fromRef.current = { x: e.clientX, y: e.clientY };
     const cur = edge === "top" ? toMin(x.start) : toMin(x.end || x.start) + (x.end ? 0 : 60);
     setDrag({ mode: edge === "top" ? "resizeTop" : "resize", id: x.id, x, col, date: x.date,
       grab: minInCol(col, e.clientY) - cur, start: x.start, end: x.end || "" });
@@ -3301,12 +3322,19 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
   /* 블록 몸통 — 통째로 옮기기 */
   const beginMove = (e, x, col) => {
     if (e.button != null && e.button !== 0) return;
-    e.preventDefault();
     if (!col) return;
+    movedRef.current = false;
+    fromRef.current = { x: e.clientX, y: e.clientY };
     const st = toMin(x.start);
     const dur = x.end ? Math.max(20, toMin(x.end) - st) : 60;
     setDrag({ mode: "move", id: x.id, x, col, date: x.date, dur,
       grab: minInCol(col, e.clientY) - st, start: x.start, end: x.end || toHM(st + dur), moved: false });
+  };
+
+  const goLink = (x) => {
+    if (x.kind === "counsel") onGoCounsel && onGoCounsel();
+    else if (x.kind === "event") { if (x.pid) onOpenProject && onOpenProject(x.pid); }
+    else onOpenSub(x.pid, x.sid);
   };
 
   const hours = [];
@@ -3314,26 +3342,27 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
 
   const Block = ({ x, iso, compact }) => {
     const on = drag && drag.id === x.id;
-    const showStart = on && (drag.mode === "move" || drag.mode === "resizeTop") ? drag.start : x.start;
-    const showEnd = on ? (drag.mode === "move" ? drag.end : drag.mode === "resizeTop" ? x.end : (drag.end || x.end)) : x.end;
-    const hideHere = on && drag.mode === "move" && drag.date !== iso;
+    const moving = on && drag.mode === "move" && drag.moved;
+    const showStart = on && ((drag.mode === "move" && drag.moved) || drag.mode === "resizeTop") ? drag.start : x.start;
+    const showEnd = on ? (drag.mode === "move" ? (drag.moved ? drag.end : x.end) : drag.mode === "resizeTop" ? x.end : (drag.end || x.end)) : x.end;
+    const hideHere = moving && drag.date !== iso;
     if (hideHere) return null;
     return (
       <div className="rounded-lg"
         onPointerDown={(e) => beginMove(e, x, e.currentTarget.closest("[data-daycol]"))}
         onClick={(ev) => {
           ev.stopPropagation();
-          if (drag) return;
+          if (movedRef.current) { movedRef.current = false; return; }
           setSheet({ ...x, kind: x.kind });
         }}
         style={{
           position: "absolute", left: 2, right: 3, top: topOf(showStart), height: heightOf(showStart, showEnd),
           background: x.hl || (x.kind === "event" ? "#EEF1F5" : C.navySoft),
           borderLeft: "3px solid " + x.color, overflow: "hidden",
-          cursor: on ? "grabbing" : "grab", touchAction: "none",
-          opacity: on ? 0.85 : 1,
-          boxShadow: on ? "0 6px 16px rgba(26,33,30,0.18)" : "0 1px 2px rgba(26,33,30,0.06)",
-          zIndex: on ? 8 : 2 }}>
+          cursor: moving ? "grabbing" : "pointer", touchAction: "none",
+          opacity: moving ? 0.85 : 1,
+          boxShadow: moving ? "0 6px 16px rgba(26,33,30,0.18)" : "0 1px 2px rgba(26,33,30,0.06)",
+          zIndex: moving ? 8 : 2 }}>
         <div style={{ padding: compact ? "2px 4px" : "3px 7px" }}>
           <div className="flex items-baseline gap-1.5 min-w-0">
             <span style={{ fontSize: compact ? 8.5 : 10, fontWeight: 800, color: C.muted,
@@ -3348,10 +3377,14 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
           </div>
           <div className="flex items-center gap-1">
             {!compact && (
-              <span className="shrink-0 rounded" style={{ fontSize: 8.5, fontWeight: 800, padding: "1px 4px",
-                background: x.kind === "event" ? "rgba(36,72,107,0.12)" : "rgba(26,33,30,0.07)", color: C.muted }}>
+              <button onClick={(ev) => { ev.stopPropagation(); goLink(x); }}
+                title="해당 화면으로 이동"
+                className="wb-btn shrink-0 rounded" style={{ fontSize: 8.5, fontWeight: 800, padding: "2px 5px",
+                  border: "none", cursor: "pointer",
+                  background: x.kind === "counsel" ? C.greenSoft : x.kind === "event" ? "rgba(36,72,107,0.12)" : "rgba(26,33,30,0.07)",
+                  color: x.kind === "counsel" ? C.green : C.muted }}>
                 {x.kind === "event" ? "일정" : x.kind === "counsel" ? "상담" : "업무"}
-              </span>
+              </button>
             )}
             <span className="truncate" style={{ fontSize: compact ? 9.5 : 12, fontWeight: 650, color: C.ink }}>{x.title}</span>
           </div>
@@ -3385,7 +3418,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
             borderTop: "1px solid " + C.rule, cursor: "pointer" }} />
       ))}
       {timed(iso).map((x) => <Block key={x.id} x={x} iso={iso} compact={compact} />)}
-      {drag && drag.mode === "move" && drag.date === iso && drag.x.date !== iso && (
+      {drag && drag.mode === "move" && drag.moved && drag.date === iso && drag.x.date !== iso && (
         <Block key={"ghost"} x={drag.x} iso={iso} compact={compact} />
       )}
       {iso === todayISO() && nowIn && (
@@ -3447,6 +3480,9 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
             );
           })}
         </div>
+        <button onClick={() => { setPick(todayISO()); setMode("day"); }} className="wb-btn rounded-lg"
+          style={{ background: C.surface, border: "1px solid " + C.rule, padding: "6px 12px",
+            fontSize: 12.5, fontWeight: 700, cursor: "pointer", color: C.ink }}>오늘</button>
         <button onClick={() => setSheet({ kind: "event", date: pick, start: "09:00", end: "10:00" })}
           className="wb-btn rounded-lg" style={{ marginLeft: "auto", background: C.navy, border: "none",
             color: "#fff", padding: "6px 11px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
@@ -3459,7 +3495,13 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
         <button onClick={() => shiftBy(-1)} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 4 }}>
           <ChevronLeft size={17} />
         </button>
-        <span style={{ fontSize: 14, fontWeight: 780 }}>{headLabel}</span>
+        <span className="flex items-center gap-1.5" style={{ fontSize: 14, fontWeight: 780 }}>
+          {headLabel}
+          {mode === "day" && pick === todayISO() && (
+            <span className="rounded-full" style={{ background: C.navy, color: "#fff", fontSize: 10,
+              fontWeight: 800, padding: "2px 7px" }}>오늘</span>
+          )}
+        </span>
         <button onClick={() => shiftBy(1)} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 4 }}>
           <ChevronRight size={17} />
         </button>
@@ -3509,11 +3551,13 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
                   }}
                   className="wb-btn rounded-lg text-left"
                   style={{ minHeight: 58, padding: "3px 4px", cursor: "pointer",
-                    background: isToday ? C.navySoft : "transparent",
-                    border: "1px solid " + (isToday ? "#C6D6E5" : "transparent"),
+                    background: "transparent", border: "1px solid transparent",
                     opacity: c.inMonth ? 1 : 0.35 }}>
-                  <div style={{ fontSize: 10.5, fontWeight: 750, color: isToday ? C.navy : C.ink,
-                    fontVariantNumeric: "tabular-nums" }}>{c.num}</div>
+                  <div className="flex items-center" style={{ height: 18 }}>
+                    <span className="flex items-center justify-center rounded-full" style={{
+                      minWidth: 18, height: 18, fontSize: 10.5, fontWeight: 750, fontVariantNumeric: "tabular-nums",
+                      background: isToday ? C.navy : "transparent", color: isToday ? "#fff" : C.ink }}>{c.num}</span>
+                  </div>
                   {list.slice(0, 3).map((x) => (
                     <div key={x.id} draggable
                       onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData("text/plan", x.id); e.dataTransfer.effectAllowed = "move"; }}
@@ -3537,10 +3581,13 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
               <button key={d.iso} onClick={() => { setPick(d.iso); setMode("day"); }} className="wb-btn"
                 style={{ background: "none", border: "none", cursor: "pointer", padding: "2px 0 5px" }}>
                 <div style={{ fontSize: 9.5, fontWeight: 700,
-                  color: d.wd === "일" ? C.seal : d.wd === "토" ? C.navy : C.faint }}>{d.wd}</div>
-                <div style={{ fontSize: 12.5, fontWeight: 800,
-                  color: d.iso === todayISO() ? C.navy : d.wd === "일" ? C.seal : C.ink,
-                  fontVariantNumeric: "tabular-nums" }}>{d.num}</div>
+                  color: d.iso === todayISO() ? C.navy : d.wd === "일" ? C.seal : d.wd === "토" ? C.navy : C.faint }}>{d.wd}</div>
+                <div className="flex items-center justify-center" style={{ margin: "1px auto 0" }}>
+                  <span className="flex items-center justify-center rounded-full" style={{
+                    width: 22, height: 22, fontSize: 12.5, fontWeight: 800, fontVariantNumeric: "tabular-nums",
+                    background: d.iso === todayISO() ? C.navy : "transparent",
+                    color: d.iso === todayISO() ? "#fff" : d.wd === "일" ? C.seal : C.ink }}>{d.num}</span>
+                </div>
               </button>
             ))}
           </div>
@@ -3609,12 +3656,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
       {sheet && (
         <PlanSheet init={sheet} projects={data.projects}
           onClose={() => setSheet(null)}
-          onGoLink={(x) => {
-            setSheet(null);
-            if (x.kind === "counsel") onGoCounsel && onGoCounsel();
-            else if (x.kind === "event") onOpenProject && onOpenProject(x.pid);
-            else onOpenSub(x.pid, x.sid);
-          }}
+          onGoLink={(x) => { setSheet(null); goLink(x); }}
           onDelete={sheet.id
             ? () => {
                 if (sheet.kind === "event") onDeleteEvent(sheet.id);
@@ -3693,8 +3735,8 @@ function MiniTodo({ todo, no, noRed, tag, right, onToggle, onEdit, onMove, onAdd
             background: "#F7F8F6", outline: "none", color: C.ink, minWidth: 0, resize: "none",
             lineHeight: 1.4, fontFamily: FONT }} />
       ) : (
-        <span {...editTrigger(() => { setDraft(todo.text); setEditing(true); })} className="flex-1 min-w-0"
-          title="더블클릭하면 수정됩니다"
+        <span onClick={() => { setDraft(todo.text); setEditing(true); }} className="flex-1 min-w-0"
+          title="눌러서 수정"
           style={{ fontSize: dense ? 12.5 : 13.5, lineHeight: 1.4, cursor: "text",
             wordBreak: "break-word", whiteSpace: "pre-wrap" }}>
           {todo.text}
@@ -4636,6 +4678,9 @@ function NoteComposer({ projects, onCreate }) {
   const fileRef = useRef(null);
   const [imgHtml, setImgHtml] = useState("");
 
+  const boxRef = useRef(null);
+  const stateRef = useRef(null);
+
   const reset = () => { setTitle(""); setText(""); setPid(""); setMode("text"); setItems([]); setImgHtml(""); setOpen(false); };
   const save = () => {
     const hasBody = text.trim() || imgHtml || items.some((x) => x.text.trim());
@@ -4657,6 +4702,18 @@ function NoteComposer({ projects, onCreate }) {
       setOpen(true);
     } catch (e) {}
   };
+
+  stateRef.current = save;          /* 항상 최신 저장 동작을 가리킵니다 */
+
+  /* 바깥을 누르면 그대로 저장하고 닫힙니다 */
+  useEffect(() => {
+    if (!open) return;
+    const away = (e) => {
+      if (boxRef.current && !boxRef.current.contains(e.target)) stateRef.current();
+    };
+    document.addEventListener("pointerdown", away);
+    return () => document.removeEventListener("pointerdown", away);
+  }, [open]);
 
   if (!open) {
     return (
@@ -4687,7 +4744,7 @@ function NoteComposer({ projects, onCreate }) {
   }
 
   return (
-    <Card style={{ padding: "12px 13px" }}>
+    <Card style={{ padding: "12px 13px" }} innerRef={boxRef}>
       <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="제목" autoFocus
         className="w-full" style={{ fontSize: 15, fontWeight: 700, color: C.ink, background: "transparent",
           border: "none", outline: "none", padding: "2px 0" }} />
