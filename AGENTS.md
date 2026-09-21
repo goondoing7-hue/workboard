@@ -8,10 +8,12 @@
 - `src/counseling.jsx`: 상담 화면, 내담자 등록·수정, 예약·회기 관리.
 - `src/counselingDomain.mjs`: 상담 상태 호환 처리, 예약 검증·중복 확인, 회기 계산.
 - `src/googleCalendar.jsx`, `src/googleCalendarDomain.mjs`: 공개 상담 캘린더 연결·갱신, 외부 예약의 ID·내담자 연결·상담일지 보존.
+- `src/googleCalendarRead.mjs`: 상담 공개 피드가 403/404이면 기존 권한으로 고정 상담 캘린더를 인증 조회한다. 비공개 상태를 유지하며 기존 iCalUID·반복 회차 식별자를 보존한다.
 - `src/googleCalendarWriter.jsx`, `src/googleCalendarSession.mjs`, `src/googleCalendarPublish.mjs`, `src/googleCalendarWriteDomain.mjs`: 명시적 OAuth 연결 후 새 상담 예약 등록. 서버 설정 시 HttpOnly 암호화 쿠키로 권한을 복원·갱신한다. 설정 전에는 `googleCalendarAuth.mjs`의 메모리 전용 임시 연결을 유지한다. 공개 전송 필드는 제목·일정·지정 장소로 제한하며, 로컬 저장 성공 후 같은 이벤트 ID로 전송·재시도한다.
 - `server/googleCalendarSession.cjs`, `api/google-calendar-auth.js`: 지정 캘린더의 서버 인증·쓰기 API. 비밀번호·세션 키는 서버 환경변수 전용이며 번들·저장 데이터·로그에 노출하지 않는다. 배포 설정과 Google Testing 7일 제한은 `docs/CALENDAR_AUTO_SYNC.md` 참고.
 - `server/googleCalendar.cjs`: Google 공개 iCal 읽기 API. 로컬 서버 및 Vercel/Netlify 함수에서 사용. 반복 일정은 별도 worker에서 제한 시간 안에 해석한다.
 - `src/documentSchedule.mjs`: 서류 계획·완료 일시 저장과 검증. 기존 `sub.docs` boolean을 유지하고 `sub.docSchedule`에 일시를 추가한다.
+- `src/centerCalendar.jsx`, `src/centerCalendarDomain.mjs`: 센터 캘린더 양방향 동기화. `events[].centerSync`에 원격 ID·ETag·저장 후 전송 큐·삭제 표식을 유지한다. 상담은 `resv` 및 독립 `__counsel__` 일정 필터를 사용한다.
 - `tests/*.test.mjs`: 상담·서류 데이터 호환성과 시간 처리 검증. `node --test tests/*.test.mjs`로 실행.
 - `scripts/build.js`: Tailwind와 esbuild로 `dist/index.html` 생성.
 - `scripts/dev.js`: 로컬 서버와 변경 감지. `npm run dev` → `http://localhost:3000`.
@@ -26,6 +28,7 @@
 - 업무 데이터는 서버가 아닌 브라우저의 `workboard:data`에 저장된다. 데이터 형식 변경 시 기존 데이터를 읽을 수 있어야 한다.
 - 내담자·예약의 기존 ID와 일지·첨부 데이터를 보존한다. 추가 상담 항목은 선택 사항이며, 기존 완료 서류의 실제 완료 시각을 추정해서 채우지 않는다.
 - 구글 상담 예약은 `resv`에 `source: "google-calendar"`로 저장한다. 날짜·시간·장소는 원본에서 갱신하고 내담자 연결·유형·일지·완료 상태는 보존한다. API 오류일 때 기존 예약을 취소 처리하지 않는다. 제목만으로 사람을 자동 연결하지 않는다.
+- 센터 일정은 서버의 `GOOGLE_CENTER_CALENDAR_ID` 하나에만 연결한다. 앱에서 새로 만들거나 일정 필드를 수정한 센터 일정만 전송하며 기존 로컬 일정을 일괄 전송하지 않는다. 완료 체크는 로컬 전용이다. 수정·삭제는 ETag로 충돌을 확인하고, 실패한 목록 조회로 데이터를 지우지 않는다. 종일 `endDate`는 마지막 날 다음 날짜이며 반복 일정은 해당 회차만 수정한다.
 - Google Drive와 Supabase 동기화는 앱 설정에서 선택적으로 연결한다. 기본 로컬 실행에는 API 키나 `.env`가 필요 없다.
 - 테스트는 별도 브라우저 컨텍스트의 임시 데이터로 수행한다. 사용 중인 데이터와 동기화 설정을 덮어쓰지 않는다.
 - 기존 한국어 문구·모바일 화면·색 토큰·오프라인 배포 구조를 고려하고, 요청 범위 안에서 변경한다.

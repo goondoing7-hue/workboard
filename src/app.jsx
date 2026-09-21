@@ -2,6 +2,8 @@ import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "re
 import { createPortal } from "react-dom";
 import CounselBoard from "./counseling.jsx";
 import { useGoogleCalendar, GoogleCalendarButton, GoogleReservationEditor } from "./googleCalendar.jsx";
+import { useCenterCalendar } from "./centerCalendar.jsx";
+import { prepareCenterEvent, deleteCenterEvent, isHiddenCenterEvent } from "./centerCalendarDomain.mjs";
 import { externalReservation, externalReservationTitle } from "./googleCalendarDomain.mjs";
 import { mergeReservation, reservationStatus, reservationScheduleChanged, validateReservation } from "./counselingDomain.mjs";
 import { documentScheduleOf, documentScheduleError, patchDocumentSchedule, toggleDocument, formatDocumentTime } from "./documentSchedule.mjs";
@@ -1461,10 +1463,10 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
   })).filter((x) => x.subs.length > 0);
 
   /* 오늘부터 앞으로 5일치 — 업무와 일정을 함께 */
-  const planRows = (events || []).map((e) => {
+  const planRows = (events || []).filter((e) => !isHiddenCenterEvent(e)).map((e) => {
     const i = data.projects.findIndex((p) => p.id === e.pid);
     return { id: e.id, kind: "event", text: e.title, due: e.date, dueTime: e.start || "", dueEnd: e.end || "",
-      place: e.place, pid: e.pid || "", sName: "",
+      place: e.place, pid: e.pid || "", sName: "", endDate: e.endDate, allDay: e.allDay,
       pName: i >= 0 ? data.projects[i].name : "센터 일정",
       pColor: i >= 0 ? colorOf(data.projects[i], i) : "#5A6673" };
   });
@@ -1483,7 +1485,7 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
       d.setDate(d.getDate() + k);
       d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
       const iso = d.toISOString().slice(0, 10);
-      const items = merged.filter((r) => r.due === iso && !(k === 0 && isPast(r)))
+      const items = merged.filter((r) => (r.due === iso || (r.kind === "event" && r.due < iso && r.endDate && (iso < r.endDate || (iso === r.endDate && !r.allDay && r.dueEnd && r.dueEnd !== "00:00")))) && !(k === 0 && r.due === iso && !(r.endDate > iso) && isPast(r)))
         .sort((a, b) => (a.dueTime || "99:99").localeCompare(b.dueTime || "99:99"));
       if (!items.length) continue;
       const wd = ["일", "월", "화", "수", "목", "금", "토"][new Date(iso + "T00:00:00").getDay()];
@@ -1763,6 +1765,7 @@ export default function WorkBoard() {
     return { ...next, updatedAt: Date.now() };
   });
   const calendarConnection = useGoogleCalendar({ data, setData, active: loaded && !needPw, isReservationStored: (reservation) => !!storedData?.resv?.includes(reservation) });
+  const centerConnection = useCenterCalendar({ data, setData, active: loaded && !needPw, isEventStored: (event) => !!storedData?.events?.includes(event) });
 
   /* 모르는 항목까지 그대로 살려 둡니다.
      예전 버전이 깔린 기기가 동기화해도 새 기능의 내용이 지워지지 않게 하기 위함입니다. */
@@ -1785,6 +1788,7 @@ export default function WorkBoard() {
       if (!has && Array.isArray(mine[k]) && mine[k].length) out[k] = mine[k];
     });
     if (!Object.prototype.hasOwnProperty.call(incoming, "googleCalendar") && mine.googleCalendar) out.googleCalendar = mine.googleCalendar;
+    if (!Object.prototype.hasOwnProperty.call(incoming, "centerCalendar") && mine.centerCalendar) out.centerCalendar = mine.centerCalendar;
     return out;
   };
 
@@ -2221,7 +2225,7 @@ export default function WorkBoard() {
             )}
             <div className="flex items-center gap-2 shrink-0">
               <SyncBadge state={syncState} on={syncReady(sync)} onClick={() => setShowSettings(true)} />
-              <GoogleCalendarButton ui={COUNSEL_UI} connection={calendarConnection} />
+              <GoogleCalendarButton ui={COUNSEL_UI} connection={calendarConnection} centerConnection={centerConnection} />
               <button onClick={() => setShowSettings(true)} className="wb-btn rounded-xl shrink-0"
                 style={{ background: C.surface, border: "1px solid " + C.rule, padding: 9, cursor: "pointer", color: C.muted }}>
                 <Settings2 size={17} strokeWidth={2.1} />
@@ -2419,7 +2423,7 @@ export default function WorkBoard() {
                 mapSub(pid, sid, (s2) => ({ ...s2, todos: s2.todos.filter((t) => t.id !== tid) }));
                 flash("삭제했습니다", () => item && mapSub(pid, sid, (s2) => ({ ...s2, todos: [...s2.todos, item] })));
               }}
-              onDeleteEvent={(id) => setData((d) => ({ ...d, events: (d.events || []).filter((e) => e.id !== id) }))}
+              onDeleteEvent={(id, expectedEtag) => setData((d) => deleteCenterEvent(expectedEtag ? { ...d, events: (d.events || []).map((event) => event.id === id && event.centerSync ? { ...event, centerSync: { ...event.centerSync, etag: expectedEtag } } : event) } : d, id))}
               onSaveEvent={(v) => {
                 if (v.kind === "todo") {
                   const proj = data.projects.find((x) => x.id === v.pid);
@@ -2439,13 +2443,17 @@ export default function WorkBoard() {
                   }
                   return;
                 }
-                setData((d) => {
-                  const list = d.events || [];
-                  if (v.id && list.some((e) => e.id === v.id)) {
-                    return { ...d, events: list.map((e) => (e.id === v.id ? { ...e, ...v } : e)) };
-                  }
-                  return { ...d, events: [...list, { ...v, id: v.id || uid(), createdAt: Date.now() }] };
-                });
+                try {
+                  const previous = (dataRef.current.events || []).find((e) => e.id === v.id);
+                  const { expectedCenterEtag, ...patch } = v;
+                  const next = prepareCenterEvent(previous, { ...previous, ...patch, id: v.id || uid(), createdAt: previous?.createdAt || Date.now() });
+                  // A background refresh can arrive while the edit sheet is
+                  // open. Keep the version the user actually edited so Google
+                  // can reject a stale save instead of silently overwriting it.
+                  if (expectedCenterEtag && next.centerSync?.state === "pending") next.centerSync = { ...next.centerSync, etag: expectedCenterEtag };
+                  setData((d) => ({ ...d, events: previous ? (d.events || []).map((e) => e.id === next.id ? next : e) : [...(d.events || []), next] }));
+                  return true;
+                } catch (error) { flash(error.message); return false; }
               }} /></>
           )}
 
@@ -2951,6 +2959,7 @@ function LogSheet({ resv, client, session, onSave, onClose }) {
 const HOUR_H = 46;          /* 한 시간의 높이(px) */
 const DAY_FROM = 7, DAY_TO = 21;
 const CENTER = "__center__";
+const COUNSEL = "__counsel__";
 const CENTER_COLOR = "#1E6C86";   /* 청록빛 파랑 — 사업 색·회색과 겹치지 않습니다 */
 const EDU = "__edu__";
 const EDU_COLOR = "#8E2F52";      /* 보수교육 — 자주빛 */
@@ -2958,6 +2967,7 @@ const EDU_COLOR = "#8E2F52";      /* 보수교육 — 자주빛 */
 const toMin = (t) => (t ? Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5)) : null);
 const toHM = (m) => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
 const snap = (m) => Math.max(0, Math.min(24 * 60 - 10, Math.round(m / 10) * 10));
+const shiftISO = (date, days) => { const d = new Date(`${date}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + days); return d.toISOString().slice(0, 10); };
 
 /* 일정 만들기 · 고치기 */
 /* 시트 안의 한 줄 — 컴포넌트 밖에 두어야 글자를 칠 때 입력칸이 초기화되지 않습니다 */
@@ -2976,6 +2986,10 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
   const [start, setStart] = useState(init.start || "09:00");
   const [end, setEnd] = useState(init.end || "10:00");
   const [noTime, setNoTime] = useState(!init.start);
+  const initialLastDate = init.endDate ? (init.allDay ? shiftISO(init.endDate, -1) : init.endDate) : (init.date || todayISO());
+  const [lastDate, setLastDate] = useState(initialLastDate);
+  const [multiDay, setMultiDay] = useState(initialLastDate > (init.date || todayISO()));
+  const [error, setError] = useState("");
   const [pid, setPid] = useState(init.pid || "");
   const [sid, setSid] = useState(init.sid || "");
   const [place, setPlace] = useState(init.place || "");
@@ -2990,6 +3004,8 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
   const save = () => {
     const t = title.trim();
     if (!t && kind !== "counsel") { onClose(); return; }
+    if (!date || (kind === "event" && multiDay && lastDate < date)) { setError("종료일은 시작일 이후로 선택해 주세요."); return; }
+    if (!noTime && (!start || !end || ((kind !== "event" || !multiDay || lastDate === date) && end <= start))) { setError("종료 시간을 시작 시간보다 늦게 설정해 주세요."); return; }
     if (kind === "counsel") {
       onSave({ id: init.id, kind: "counsel", date, start: noTime ? "" : start, end: noTime ? "" : end });
       return;
@@ -2997,16 +3013,18 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
     onSave({
       id: init.id, kind, title: t, date,
       start: noTime ? "" : start, end: noTime ? "" : end,
+      ...(kind === "event" ? { allDay: noTime, endDate: noTime ? shiftISO(multiDay ? lastDate : date, 1) : (multiDay ? lastDate : date) } : {}),
       pid: kind === "todo" ? pid : (pid || ""), sid: kind === "todo" ? sid : "",
       place: kind === "event" ? place.trim() : "",
       memo: kind === "event" ? memo.trim() : "",
+      ...(kind === "event" && init.centerSync?.etag ? { expectedCenterEtag: init.centerSync.etag } : {}),
     });
   };
 
   return (
     <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade"
       style={{ background: "rgba(26,33,30,0.4)", zIndex: 60 }} {...dismiss}>
-      <div className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
+      <div role="dialog" aria-modal="true" aria-label={init.id ? "일정 고치기" : "새 일정"} className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
         style={{ maxWidth: 460, background: C.bg, border: "1px solid " + C.rule, maxHeight: "88vh", overflowY: "auto" }}>
 
         <div className="flex items-center justify-between" style={{ padding: "14px 16px 8px" }}>
@@ -3034,7 +3052,7 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
             <DatePick value={date} onChange={setDate} style={{ width: "100%" }} />
             <label className="flex items-center gap-1.5 mt-2" style={{ fontSize: 12.5, color: C.muted, cursor: "pointer" }}>
               <input type="checkbox" checked={noTime} onChange={(e) => setNoTime(e.target.checked)} />
-              시간 미정
+              {kind === "event" ? "종일" : "시간 미정"}
             </label>
             {!noTime && (
               <div className="flex items-center gap-2 mt-2">
@@ -3043,10 +3061,15 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
                 <TimePick value={end} onChange={setEnd} style={{ flex: 1 }} />
               </div>
             )}
+            {kind === "event" && <>
+              <label className="flex items-center gap-1.5 mt-2" style={{ fontSize: 12, color: C.muted, cursor: "pointer" }}><input type="checkbox" checked={multiDay} onChange={(e) => { setMultiDay(e.target.checked); if (lastDate < date) setLastDate(date); }} />여러 날 일정</label>
+              {multiDay && <div className="mt-2"><Label>종료일</Label><DatePick value={lastDate} onChange={setLastDate} style={{ width: "100%", marginTop: 5 }} /></div>}
+            </>}
           </SheetRow>
 
           {kind !== "counsel" && (
           <SheetRow icon={FolderClosed}>
+            {init.centerSync ? <div style={{ fontSize: 12, color: CENTER_COLOR, fontWeight: 700 }}>센터 일정 · 구글 캘린더 연동</div> : <>
             <div className="flex items-center gap-1.5 flex-wrap">
               <button onClick={() => { setPid(""); setSid(""); }} className="wb-btn rounded-full"
                 style={{ fontSize: 11.5, fontWeight: 700, padding: "4px 10px", cursor: "pointer",
@@ -3093,6 +3116,7 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
                 </div>
               </div>
             )}
+            </>}
           </SheetRow>
           )}
 
@@ -3114,6 +3138,8 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
               </SheetRow>
             </>
           )}
+          {kind === "event" && !pid && <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.6, marginTop: 8 }}>제목·날짜·시간·장소·설명이 센터 구글 캘린더와 동기화됩니다.{init.centerSync ? " 삭제하면 구글에서도 삭제됩니다." : ""}{init.centerSync?.recurringEventId ? " 반복 일정은 선택한 회차만 수정합니다." : ""}</div>}
+          {error && <div role="alert" style={{ color: C.seal, fontSize: 12, marginTop: 8 }}>{error}</div>}
 
           {init.id && onGoLink && (init.kind !== "event" || init.pid) && (
             <button onClick={() => onGoLink(init)} className="wb-btn w-full flex items-center gap-2 rounded-lg mt-3"
@@ -3174,8 +3200,8 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
       id: r.id, kind: "todo", title: r.text, date: r.due, start: r.dueTime || "", end: r.dueEnd || "",
       pid: r.pid, sid: r.sid, sName: r.sName, color: r.pColor, hl: r.hl, done: !!r.done,
     })),
-    ...(events || []).map((e) => ({
-      id: e.id, kind: "event", title: e.title, date: e.date, start: e.start || "", end: e.end || "",
+    ...(events || []).filter((e) => !isHiddenCenterEvent(e)).map((e) => ({
+      ...e, id: e.id, kind: "event", title: e.title, date: e.date, start: e.start || "", end: e.end || "",
       pid: e.pid || "", sid: "", place: e.place, memo: e.memo, done: !!e.done,
       color: colorFor(e.pid || ""), hl: "",
     })),
@@ -3187,10 +3213,10 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
         place: r.place || "", memo: r.memo, clientId: r.clientId, rtype: r.type, done: reservationStatus(r) === "done",
         color: C.green, hl: C.greenSoft };
     }),
-  ].filter((x) => x.date && !hidden.includes(x.pid === EDU ? EDU : (x.pid || CENTER)));
+  ].filter((x) => x.date && !hidden.includes(x.kind === "counsel" ? COUNSEL : x.pid === EDU ? EDU : (x.pid || CENTER)));
 
-  const onDay = (iso) => all.filter((x) => x.date === iso || (x.readOnly && x.date < iso && x.endDate && (iso < x.endDate || (iso === x.endDate && !x.allDay && x.end && x.end !== "00:00"))))
-    .map((x) => !x.readOnly || x.allDay ? x : { ...x, date: iso, start: x.date < iso ? "00:00" : x.start, end: x.endDate > iso ? "23:59" : x.end });
+  const onDay = (iso) => all.filter((x) => x.date === iso || (x.date < iso && x.endDate && (iso < x.endDate || (iso === x.endDate && !x.allDay && x.end && x.end !== "00:00"))))
+    .map((x) => !x.endDate || x.endDate === x.date ? x : x.allDay ? { ...x, noDrag: x.endDate > shiftISO(x.date, 1) } : { ...x, original: x, noDrag: true, date: iso, start: x.date < iso ? "00:00" : x.start, end: x.endDate > iso ? "23:59" : x.end });
   const timed = (iso) => onDay(iso).filter((x) => x.start).sort((a, b) => a.start.localeCompare(b.start));
   const untimed = (iso) => onDay(iso).filter((x) => !x.start);
 
@@ -3200,23 +3226,23 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
 
   /* 날짜와 시각을 함께 옮깁니다 */
   const moveTo = (x, date, start, end) => {
-    if (x.readOnly) return;
+    if (x.readOnly || x.noDrag) return;
     if (x.kind === "todo") onSetTodoTime(x.pid, x.sid, x.id, { due: date, dueTime: start, dueEnd: end });
     else if (x.kind === "counsel") onSaveResv({ id: x.id, date, start, end });
-    else onSaveEvent({ ...x, date, start, end });
+    else onSaveEvent({ id: x.id, date, start, end, allDay: !start, endDate: start ? date : shiftISO(date, 1) });
   };
 
   const onToggleDone = (x) => {
     if (x.kind === "todo") onSetTodoTime(x.pid, x.sid, x.id, { done: !x.done });
     else if (x.kind === "counsel") onSaveResv({ id: x.id, done: !x.done });
-    else onSaveEvent({ ...x, done: !x.done });
+    else onSaveEvent({ id: x.id, done: !x.done });
   };
 
   const applyTime = (x, start, end) => {
-    if (x.readOnly) return;
+    if (x.readOnly || x.noDrag) return;
     if (x.kind === "todo") onSetTodoTime(x.pid, x.sid, x.id, { dueTime: start, dueEnd: end });
     else if (x.kind === "counsel") onSaveResv({ id: x.id, start, end });
-    else onSaveEvent({ ...x, start, end });
+    else onSaveEvent({ id: x.id, start, end });
   };
 
   /* 끌어서 시간 조절 · 자리 이동 — 잡은 지점과 어긋나지 않게 간격을 기억합니다 */
@@ -3266,7 +3292,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
       setDrag((cur) => {
         if (cur) {
           if (cur.mode === "move" && !movedRef.current) {
-            setSheet({ ...cur.x, kind: cur.x.kind });      /* 그냥 누르면 정보 보기 */
+            setSheet(cur.x.original || cur.x);      /* 그냥 누르면 원본 일정 보기 */
           } else if (movedRef.current) {
             if (cur.mode === "resize" && cur.end) applyTime(cur.x, cur.x.start, cur.end);
             else if (cur.mode === "resizeTop" && cur.start) applyTime(cur.x, cur.start, cur.x.end || toHM(toMin(cur.x.start) + 60));
@@ -3288,7 +3314,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
 
   /* 가장자리를 끌어 시각 조절 (위 = 시작, 아래 = 끝) */
   const beginResize = (e, x, col, edge) => {
-    if (x.readOnly) return;
+    if (x.readOnly || x.noDrag) return;
     e.preventDefault(); e.stopPropagation();
     if (!col) return;
     movedRef.current = false;
@@ -3300,7 +3326,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
 
   /* 블록 몸통 — 통째로 옮기기 */
   const beginMove = (e, x, col) => {
-    if (x.readOnly) { movedRef.current = false; return; }
+    if (x.readOnly || x.noDrag) { movedRef.current = false; return; }
     if (e.button != null && e.button !== 0) return;
     if (!col) return;
     movedRef.current = false;
@@ -3333,7 +3359,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
         onClick={(ev) => {
           ev.stopPropagation();
           if (movedRef.current) { movedRef.current = false; return; }
-          setSheet({ ...x, kind: x.kind });
+          setSheet(x.original || x);
         }}
         style={{
           position: "absolute", left: 2, right: 3, top: topOf(showStart), height: heightOf(showStart, showEnd),
@@ -3383,7 +3409,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
             {x.done && <Check size={10} strokeWidth={3.6} />}
           </button>
         )}
-        {!x.readOnly && <><div onPointerDown={(e) => beginResize(e, x, e.currentTarget.closest("[data-daycol]"), "top")}
+        {!x.readOnly && !x.noDrag && <><div onPointerDown={(e) => beginResize(e, x, e.currentTarget.closest("[data-daycol]"), "top")}
           style={{ position: "absolute", left: 0, right: 0, top: 0, height: 9, cursor: "ns-resize", touchAction: "none" }} />
         <div onPointerDown={(e) => beginResize(e, x, e.currentTarget.closest("[data-daycol]"), "bottom")}
           style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 9, cursor: "ns-resize", touchAction: "none" }} /></>}
@@ -3504,7 +3530,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
       <Card style={{ padding: "10px 12px" }}>
         <Label>표시할 일정</Label>
         <div className="flex items-center gap-1.5 flex-wrap mt-2">
-          {[{ id: CENTER, name: "센터 일정", color: CENTER_COLOR }, { id: EDU, name: "보수교육", color: EDU_COLOR }, ...data.projects.map((p, i) => ({ id: p.id, name: p.name, color: colorOf(p, i) }))]
+          {[{ id: CENTER, name: "센터 일정", color: CENTER_COLOR }, { id: COUNSEL, name: "상담", color: C.green }, { id: EDU, name: "보수교육", color: EDU_COLOR }, ...data.projects.map((p, i) => ({ id: p.id, name: p.name, color: colorOf(p, i) }))]
             .map((o) => {
               const off = hidden.includes(o.id);
               return (
@@ -3552,7 +3578,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
                       background: isToday ? C.navy : "transparent", color: isToday ? "#fff" : C.ink }}>{c.num}</span>
                   </div>
                   {list.slice(0, 3).map((x) => (
-                    <div key={x.id} draggable={!x.readOnly}
+                    <div key={x.id} draggable={!x.readOnly && !x.noDrag}
                       onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData("text/plan", x.id); e.dataTransfer.effectAllowed = "move"; }}
                       className="truncate" style={{ fontSize: 8.5, color: C.ink, lineHeight: 1.35,
                         borderLeft: "2px solid " + x.color, paddingLeft: 3, marginTop: 1, cursor: "grab" }}>{x.title}</div>
@@ -3605,17 +3631,17 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
         <>
           {untimed(pick).length > 0 && (
             <Card style={{ padding: "10px 12px" }}>
-              <Label>시간 미정 {untimed(pick).length}</Label>
+              <Label>종일 · 시간 미정 {untimed(pick).length}</Label>
               <div style={{ fontSize: 10, color: C.faint, margin: "3px 0 6px" }}>아래 시간표로 끌어다 놓으면 시각이 정해집니다</div>
               {untimed(pick).map((x) => (
-                <div key={x.id} draggable={!x.readOnly}
+                <div key={x.id} draggable={!x.readOnly && !x.noDrag}
                   onDragStart={(e) => { e.dataTransfer.setData("text/plan", x.id); e.dataTransfer.effectAllowed = "move"; }}
-                  onClick={() => setSheet({ ...x })}
+                  onClick={() => setSheet(x.original || x)}
                   className="flex items-center gap-2 rounded-lg"
                   style={{ background: x.hl || "#F4F6F3", borderLeft: "3px solid " + x.color,
                     padding: "5px 8px", marginBottom: 4, cursor: "grab" }}>
                   <span className="flex-1 min-w-0 truncate" style={{ fontSize: 12.5 }}>{x.title}</span>
-                  <span className="shrink-0" style={{ fontSize: 9.5, color: C.faint }}>{nameFor(x.pid)}</span>
+                  <span className="shrink-0" style={{ fontSize: 9.5, color: C.faint }}>{x.kind === "counsel" ? "상담" : nameFor(x.pid)}</span>
                 </div>
               ))}
             </Card>
@@ -3653,12 +3679,12 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
           onGoLink={(x) => { setSheet(null); goLink(x); }}
           onDelete={sheet.id
             ? () => {
-                if (sheet.kind === "event") onDeleteEvent(sheet.id);
+                if (sheet.kind === "event") { if (onDeleteEvent(sheet.id, sheet.centerSync?.etag) === false) return; }
                 else if (sheet.kind === "counsel") { if (onDeleteResv(sheet.id) === false) return; }
                 else onDeleteTodo(sheet.pid, sheet.sid, sheet.id);
                 setSheet(null);
               } : null}
-          onSave={(v) => { if (v.kind === "counsel" && onSaveResv(v) === false) return; if (v.kind !== "counsel") onSaveEvent(v); setSheet(null); }} />
+          onSave={(v) => { if (v.kind === "counsel" && onSaveResv(v) === false) return; if (v.kind !== "counsel" && onSaveEvent(v) === false) return; setSheet(null); }} />
       )}
     </div>
   );

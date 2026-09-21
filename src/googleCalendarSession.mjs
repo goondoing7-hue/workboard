@@ -22,7 +22,7 @@ export function createCalendarSession({
   let session = { status: "disconnected", connected: false, clientId: "", calendarId: "", persistent: false, error: "", retryable: false };
   const listeners = new Set(), requests = new Set();
   const snapshot = () => ({ ...(config?.configured === false ? legacy.getCalendarAuthStatus() : session),
-    configured: config?.configured ?? null, serverClientId: config?.clientId || "", serverCalendarId: config?.calendarId || "",
+    configured: config?.configured ?? null, serverClientId: config?.clientId || "", serverCalendarId: config?.calendarId || "", serverCenterCalendarId: config?.centerCalendarId || "",
     persistent: config?.configured === false ? false : session.persistent,
     checking: session.status === "checking", connecting: session.status === "connecting" || (config?.configured === false && legacy.getCalendarAuthStatus().connecting),
     retryable: config?.configured === false ? false : session.retryable,
@@ -98,7 +98,7 @@ export function createCalendarSession({
       if (typeof value?.configured !== "boolean" || (value.configured && (!validCalendarClientId(value.clientId) || typeof value.calendarId !== "string" || !value.calendarId))) {
         throw authError("invalid_configuration", "Google 캘린더 자동 연결 설정을 확인해 주세요.");
       }
-      config = { configured: value.configured, clientId: value.clientId || "", calendarId: value.calendarId || "" }; emit(); return config;
+      config = { configured: value.configured, clientId: value.clientId || "", calendarId: value.calendarId || "", centerCalendarId: value.centerCalendarId || "" }; emit(); return config;
     }).finally(() => { if (configPromise === promise) configPromise = null; });
     configPromise = promise;
     return promise;
@@ -195,6 +195,25 @@ export function createCalendarSession({
     try { return await request("proxy", { url: url.href, method, ...(body === undefined ? {} : { body }) }, { signal: options.signal, timeoutMs: options.timeoutMs, stamp }); }
     catch (failure) { if (stamp === epoch && (failure.status === 401 || failure.retryable)) fail(failure); throw failure; }
   }
+  async function centerCalendarRequest(operation, payload = {}, { signal } = {}) {
+    const stamp = epoch;
+    await loadConfig(); assertCurrent(stamp, signal);
+    if (!config.configured || !config.centerCalendarId) throw authError("center_setup_required", "센터 캘린더 연결 설정을 확인해 주세요.");
+    if (!["list", "get", "upsert", "delete"].includes(operation)) throw authError("invalid_operation", "지원하지 않는 센터 일정 요청입니다.");
+    // The server restores the shared HttpOnly session itself. This also works
+    // before the counseling UI has finished restoring its in-memory status.
+    const response = await request("center", { ...payload, operation }, { stamp, signal, timeoutMs: 55000 });
+    return response.json();
+  }
+  async function counselingCalendarRequest(from, to, { signal, calendarId } = {}) {
+    const stamp = epoch;
+    await loadConfig(); assertCurrent(stamp, signal);
+    if (!config.configured) throw authError("setup_required", "상담 캘린더 자동 연결 설정을 확인해 주세요.");
+    if (calendarId && calendarId !== config.calendarId) throw authError("calendar_mismatch", "서버에 연결된 상담 캘린더만 가져올 수 있습니다.");
+    const response = await request("counsel-list", { from, to }, { stamp, signal, timeoutMs: 55000 });
+    return response.json();
+  }
+
   async function disconnectCalendarAccess() {
     const wasConfigured = config?.configured;
     forgetCalendarAccess();
@@ -203,9 +222,9 @@ export function createCalendarSession({
     catch (failure) { if (failure.code !== "cancelled") update({ error: "자동 등록은 꺼졌습니다. 네트워크 연결 후 권한 설정에서 연결 해제를 다시 눌러 주세요." }); throw failure; }
   }
   return { prepareCalendarAccess, requestCalendarAccess, restoreCalendarAccess, disconnectCalendarAccess,
-    getCalendarAuthStatus, subscribeCalendarAuth, forgetCalendarAccess, calendarFetch };
+    getCalendarAuthStatus, subscribeCalendarAuth, forgetCalendarAccess, calendarFetch, centerCalendarRequest, counselingCalendarRequest };
 }
 
 const calendarSession = createCalendarSession();
 export const { prepareCalendarAccess, requestCalendarAccess, restoreCalendarAccess, disconnectCalendarAccess,
-  getCalendarAuthStatus, subscribeCalendarAuth, forgetCalendarAccess, calendarFetch } = calendarSession;
+  getCalendarAuthStatus, subscribeCalendarAuth, forgetCalendarAccess, calendarFetch, centerCalendarRequest, counselingCalendarRequest } = calendarSession;

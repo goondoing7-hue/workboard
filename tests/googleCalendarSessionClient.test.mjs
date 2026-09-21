@@ -32,6 +32,31 @@ function fixture(extra = {}) {
   return { auth, prompts, configs, requests, timers, authorize, legacy, setActive: (value) => { active = value; }, legacyCalls: () => ({ requests: legacyRequests, fetches: legacyFetches }) };
 }
 
+test("center calendar uses the shared server cookie before counseling memory restoration", async () => {
+  const f = fixture({ route: async (url, _options, payload) => url.includes("?action=config")
+    ? Response.json({ ...config(), centerCalendarId: "center@group.calendar.google.com" })
+    : Response.json({ calendarId: "center@group.calendar.google.com", items: [], operation: payload.operation }) });
+  const result = await f.auth.centerCalendarRequest("list", { from: "2026-01-01", to: "2026-12-31" });
+  assert.equal(result.operation, "list");
+  assert.equal(f.prompts.length, 0);
+  assert.equal(f.requests.at(-1).options.credentials, "include");
+  assert.equal(f.requests.at(-1).options.headers["X-Workboard-Calendar"], "1");
+  assert.equal(f.auth.getCalendarAuthStatus().serverCenterCalendarId, "center@group.calendar.google.com");
+  await assert.rejects(f.auth.centerCalendarRequest("arbitrary"), { code: "invalid_operation" });
+  f.auth.forgetCalendarAccess();
+});
+
+test("center conflicts remain actionable without invalidating counseling authorization", async () => {
+  const f = fixture({ route: async (url, _options, payload) => url.includes("?action=config")
+    ? Response.json({ ...config(), centerCalendarId: "center@group.calendar.google.com" })
+    : payload.action === "center" ? Response.json({ error: { code: "event_conflict", message: "동시 수정", retryable: false } }, { status: 412 }) : Response.json(session()) });
+  await f.auth.restoreCalendarAccess(CALENDAR);
+  await assert.rejects(f.auth.centerCalendarRequest("upsert", { eventId: "a", etag: '"old"', event: {} }), { status: 412, code: "event_conflict" });
+  assert.equal(f.auth.getCalendarAuthStatus().connected, true);
+  assert.equal(f.prompts.length, 0);
+  f.auth.forgetCalendarAccess();
+});
+
 test("persistent authorization exchanges a one-use code and exposes only session metadata", async () => {
   const f = fixture(); const updates = [];
   f.auth.subscribeCalendarAuth((value) => updates.push(value));

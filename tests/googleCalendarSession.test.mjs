@@ -64,7 +64,7 @@ const proxy = (handler, cookie, body = {}, options = {}) => request(handler, { a
 test("public config reveals no credential and an incomplete setup stays explicit", async () => {
   const f = fixture();
   const response = await request(f.handler, undefined, { method: "GET" });
-  assert.deepEqual(response.data, { configured: true, clientId: CLIENT, calendarId: CALENDAR });
+  assert.deepEqual(response.data, { configured: true, clientId: CLIENT, calendarId: CALENDAR, centerCalendarId: "" });
   assert.equal(response.headers["cache-control"], "no-store, max-age=0");
   assert.doesNotMatch(response.raw, /fake-server-secret|refresh|session.key/);
   for (const patch of [{ GOOGLE_CALENDAR_CLIENT_SECRET: "" }, { GOOGLE_CALENDAR_SESSION_KEY: "short" },
@@ -325,4 +325,222 @@ test("upstream network timeouts and oversized responses return sanitized retryab
   assert.doesNotMatch(result.raw, /fake-server-secret/); assert.equal(result.cookie, undefined);
   const large = fixture({ fetch: async () => Response.json({ value: "x".repeat(300000) }) });
   assert.equal((await restore(large.handler, cookie)).status, 503);
+});
+
+const CENTER = "center@group.calendar.google.com";
+const CENTER_EVENTS = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(CENTER)}/events`;
+const CENTER_META = `${CENTER_EVENTS}?maxResults=1&fields=summary,timeZone,accessRole`;
+const centerId = (id = "event-1") => "c0" + createHash("sha256").update(`workboard:center:${id}`).digest("hex");
+const centerEvent = (patch = {}) => ({ summary: "센터 회의", description: "회의실 준비", location: "센터",
+  start: { dateTime: "2026-09-22T10:00:00+09:00", timeZone: "Asia/Seoul" },
+  end: { dateTime: "2026-09-22T11:00:00+09:00", timeZone: "Asia/Seoul" },
+  extendedProperties: { private: { workboardEventId: "event-1" } }, ...patch });
+const centerRemote = (patch = {}) => ({ id: centerId(), etag: '"version1"', status: "confirmed", ...centerEvent(), ...patch });
+const centerFixture = (options = {}) => fixture({ ...options, env: { GOOGLE_CENTER_CALENDAR_ID: CENTER, ...options.env },
+  fetch: async (url, init, calls) => {
+    if (url === TOKEN_URL) return Response.json(tokenData());
+    if (url === META) return Response.json({ accessRole: "owner" });
+    if (url === CENTER_META) return Response.json({ accessRole: options.role || "owner", summary: "센터 일정", timeZone: "Asia/Seoul" });
+    return options.fetch ? options.fetch(url, init, calls) : Response.json({ items: [] });
+  } });
+const center = (handler, cookie, body = {}, options = {}) => request(handler, {
+  action: "center", operation: "list", from: "2026-09-01", to: "2026-09-30", ...body,
+}, { cookie, ...options });
+const upsertCenter = (handler, cookie, body = {}, options = {}) => request(handler, {
+  action: "center", operation: "upsert", eventId: centerId(), event: centerEvent(), ...body,
+}, { cookie, ...options });
+
+test("center config is optional and reuses the existing counseling-bound cookie without changing grants", async () => {
+  const previous = fixture(), cookie = await connect(previous);
+  const missing = await center(previous.handler, cookie);
+  assert.equal(missing.status, 503); assert.equal(missing.data.error.code, "center_setup_required");
+  const f = centerFixture();
+  const configuration = await request(f.handler, undefined, { method: "GET" });
+  assert.equal(configuration.data.centerCalendarId, CENTER);
+  assert.doesNotMatch(configuration.raw, /secret|token|session.key/);
+  const result = await center(f.handler, cookie);
+  assert.equal(result.status, 200); assert.equal(result.cookie, undefined);
+  assert.equal(f.calls[0].url, TOKEN_URL, "old cookie restores in a new server instance");
+  assert.equal(new URLSearchParams(f.calls[0].init.body).get("grant_type"), "refresh_token");
+  assert.equal(f.calls[1].url, CENTER_META);
+  assert.deepEqual(result.data, { calendarId: CENTER, name: "센터 일정", timeZone: "Asia/Seoul", from: "2026-09-01", to: "2026-09-30", items: [] });
+});
+
+test("center list collects every page including cancelled occurrences and strips unrelated Google fields", async () => {
+  const f = centerFixture({ fetch: async (url) => {
+    const query = new URL(url).searchParams;
+    assert.equal(query.get("singleEvents"), "true"); assert.equal(query.get("showDeleted"), "true");
+    assert.equal(query.get("timeMin"), "2026-09-01T00:00:00+09:00");
+    assert.equal(query.get("timeMax"), "2026-10-01T00:00:00+09:00", "inclusive to date includes its whole day");
+    assert.equal(query.get("timeZone"), "Asia/Seoul");
+    assert.doesNotMatch(query.get("fields"), /attendees|organizer|creator/);
+    if (!query.get("pageToken")) return Response.json({ items: [centerRemote({
+      attendees: [{ email: "private@example.com" }], organizer: { email: "owner@example.com" },
+      extendedProperties: { private: { workboardEventId: "event-1", unrelatedSecret: "hidden" } },
+    })], nextPageToken: "second-page" });
+    assert.equal(query.get("pageToken"), "second-page");
+    return Response.json({ items: [{ id: "recurring_20260923T010000Z", status: "cancelled", recurringEventId: "recurring",
+      originalStartTime: { dateTime: "2026-09-23T10:00:00+09:00", timeZone: "Asia/Seoul" } }] });
+  } });
+  const result = await center(f.handler, await connect(f));
+  assert.equal(result.status, 200, result.raw); assert.equal(result.data.items.length, 2);
+  assert.equal(result.data.items[1].status, "cancelled");
+  assert.doesNotMatch(result.raw, /private@example|owner@example|unrelatedSecret|hidden|attendees|organizer/);
+  assert.deepEqual(result.data.items[0].extendedProperties, { private: { workboardEventId: "event-1" } });
+});
+
+test("failed, repeated or excessive center pages never return a partial authoritative snapshot", async () => {
+  for (const mode of ["second-fails", "cycle", "too-many-pages", "malformed", "duplicate", "too-large"]) {
+    let pages = 0;
+    const f = centerFixture({ fetch: async () => {
+      pages++;
+      if (mode === "malformed") return Response.json({ items: [{}] });
+      if (mode === "too-large") return Response.json({ items: Array.from({ length: 5001 }, (_, i) => ({ id: `item${String(i).padStart(5, "0")}`, status: "cancelled" })) });
+      if (pages === 2 && mode === "second-fails") return Response.json({ error: { message: "do not expose private event" } }, { status: 503 });
+      return Response.json({ items: pages === 1 || mode === "duplicate" ? [centerRemote()] : [], nextPageToken: mode === "cycle" ? "same" : `page-${pages}` });
+    } });
+    const result = await center(f.handler, await connect(f));
+    assert.notEqual(result.status, 200, mode); assert.equal(result.data.items, undefined, mode);
+    assert.doesNotMatch(result.raw, /센터 회의|private event/); assert.ok(pages <= 20);
+  }
+});
+
+test("center requests reject missing grants, unowned calendars, foreign origins and injected URLs before any write", async () => {
+  const f = centerFixture();
+  assert.equal((await center(f.handler, "")).status, 401); assert.equal(f.calls.length, 0);
+  const cookie = await connect(f), before = f.calls.length;
+  for (const options of [{ headers: { origin: "https://evil.example" } }, { headers: { host: "evil.example" } },
+    { headers: { "x-workboard-calendar": undefined } }, { headers: { "sec-fetch-site": "cross-site" } }]) {
+    assert.equal((await upsertCenter(f.handler, cookie, {}, options)).status, 403);
+  }
+  for (const extra of [{ calendarId: "other@gmail.com" }, { url: "https://evil.example" }, { headers: { Authorization: "injected" } }]) {
+    assert.equal((await upsertCenter(f.handler, cookie, extra)).status, 400);
+  }
+  for (const dates of [{ from: "2026-02-30" }, { from: "2026-10-01" }, { from: "2020-01-01" }, { to: "9999-12-31" }]) {
+    assert.equal((await center(f.handler, cookie, dates)).status, 400);
+  }
+  assert.equal(f.calls.length, before);
+  for (const role of ["reader", "writer", "none"]) {
+    const denied = centerFixture({ role });
+    const response = await upsertCenter(denied.handler, cookie);
+    assert.equal(response.status, 403); assert.equal(response.data.error.code, "center_calendar_not_owned");
+    assert.equal(denied.calls.filter((call) => call.init.method !== "GET" && call.url !== TOKEN_URL).length, 0);
+  }
+});
+
+test("center inserts support multiday dates and offset times, with fixed calendar and no invitation fields", async () => {
+  const examples = [centerEvent({ start: { date: "2026-09-22" }, end: { date: "2026-09-25" } }),
+    centerEvent({ end: { dateTime: "2026-09-24T11:00:00+09:00", timeZone: "Asia/Seoul" } }),
+    centerEvent({ start: { dateTime: "2026-09-22T22:00:00-07:00", timeZone: "America/Los_Angeles" },
+      end: { dateTime: "2026-09-23T01:00:00-07:00", timeZone: "America/Los_Angeles" } })];
+  for (const event of examples) {
+    const f = centerFixture({ fetch: async (url, init) => {
+      const parsed = new URL(url); assert.equal(parsed.pathname, new URL(CENTER_EVENTS).pathname);
+      assert.equal(parsed.searchParams.get("sendUpdates"), "none"); assert.equal(init.method, "POST");
+      const payload = JSON.parse(init.body); assert.deepEqual(payload, { ...event, id: centerId() });
+      assert.equal(init.headers["If-Match"], undefined);
+      return Response.json({ ...payload, etag: '"new-version"', status: "confirmed", attendees: [{ email: "hidden@example.com" }] });
+    } });
+    const result = await upsertCenter(f.handler, await connect(f), { event });
+    assert.equal(result.status, 200, result.raw); assert.equal(result.data.item.etag, '"new-version"');
+    assert.doesNotMatch(result.raw, /attendees|hidden@example/);
+  }
+});
+
+test("center writes validate bounded payloads, dates, metadata, deterministic IDs and conditional etags", async () => {
+  const f = centerFixture(), cookie = await connect(f), before = f.calls.length;
+  const patches = [{ eventId: "../../other" }, { eventId: centerId("other") }, { etag: "*" }, { etag: '"ok"\r\ninjected' },
+    { event: centerEvent({ attendees: [{ email: "private@example.com" }] }) }, { event: centerEvent({ summary: " " }) },
+    { event: centerEvent({ description: "x".repeat(8001) }) },
+    { event: centerEvent({ extendedProperties: { private: { workboardEventId: "event-1", clientId: "private" } } }) },
+    { event: centerEvent({ start: { date: "2026-02-30" }, end: { date: "2026-03-02" } }) },
+    { event: centerEvent({ start: { date: "2026-09-22" }, end: { date: "2026-09-22" } }) },
+    { event: centerEvent({ end: { date: "2026-09-23" } }) },
+    { event: centerEvent({ end: { dateTime: "2026-09-22T09:00:00+09:00", timeZone: "Asia/Seoul" } }) },
+    { event: centerEvent({ start: { dateTime: "2026-09-22T10:00:00+09:00", timeZone: "Not/AZone" } }) }];
+  for (const patch of patches) assert.equal((await upsertCenter(f.handler, cookie, patch)).status, 400, JSON.stringify(patch));
+  assert.equal(f.calls.length, before);
+});
+
+test("center updates send If-Match and preserve conflicts instead of overwriting remote changes", async () => {
+  const id = "recurring_20260922T010000Z";
+  for (const status of [200, 412]) {
+    const f = centerFixture({ fetch: async (url, init) => {
+      assert.equal(new URL(url).pathname, `${new URL(CENTER_EVENTS).pathname}/${id}`);
+      assert.equal(init.method, "PATCH"); assert.equal(init.headers["If-Match"], '"original"');
+      assert.equal(new URL(url).searchParams.get("sendUpdates"), "none");
+      assert.equal(JSON.parse(init.body).id, undefined);
+      return status === 200 ? Response.json(centerRemote({ id, etag: '"updated"' })) : Response.json({ error: { message: "private conflict details" } }, { status });
+    } });
+    const result = await upsertCenter(f.handler, await connect(f), { eventId: id, etag: '"original"' });
+    assert.equal(result.status, status);
+    if (status === 412) { assert.equal(result.data.error.code, "event_conflict"); assert.equal(result.data.error.retryable, false); }
+    assert.doesNotMatch(result.raw, /private conflict/);
+    assert.equal(f.calls.filter((call) => call.init.method === "PATCH").length, 1);
+  }
+});
+
+test("center insert retry recovers only the same deterministic event, never overwrites an ID collision", async () => {
+  for (const changed of [false, true]) {
+    const f = centerFixture({ fetch: async (url, init) => {
+      if (init.method === "POST") return Response.json({ error: {} }, { status: 409 });
+      assert.equal(init.method, "GET"); assert.equal(new URL(url).pathname, `${new URL(CENTER_EVENTS).pathname}/${centerId()}`);
+      return Response.json(centerRemote({ ...(changed ? { summary: "구글에서 변경함" } : {
+        start: { dateTime: "2026-09-22T01:00:00Z" }, end: { dateTime: "2026-09-22T02:00:00Z" },
+      }) }));
+    } });
+    const result = await upsertCenter(f.handler, await connect(f));
+    assert.equal(result.status, changed ? 409 : 200);
+    if (changed) assert.equal(result.data.error.code, "event_conflict");
+    assert.equal(f.calls.some((call) => ["DELETE", "PATCH"].includes(call.init.method)), false);
+  }
+});
+
+test("center delete requires an etag, handles empty204 and missing events, and preserves stale delete conflicts", async () => {
+  for (const status of [204, 404, 410, 412]) {
+    const f = centerFixture({ fetch: async (url, init) => {
+      assert.equal(new URL(url).pathname, `${new URL(CENTER_EVENTS).pathname}/${centerId()}`);
+      assert.equal(new URL(url).searchParams.get("sendUpdates"), "none");
+      assert.equal(init.method, "DELETE"); assert.equal(init.headers["If-Match"], '"version1"');
+      return status === 204 ? new Response(null, { status }) : Response.json({ error: {} }, { status });
+    } });
+    const cookie = await connect(f), body = { action: "center", operation: "delete", eventId: centerId(), etag: '"version1"' };
+    assert.equal((await request(f.handler, { ...body, etag: undefined }, { cookie })).status, 400);
+    const result = await request(f.handler, body, { cookie });
+    assert.equal(result.status, status === 412 ? 412 : 200);
+    if (status === 412) assert.equal(result.data.error.code, "event_conflict");
+    else assert.deepEqual(result.data, { calendarId: CENTER, eventId: centerId(), deleted: true });
+  }
+});
+
+test("center get distinguishes a remote move outside the list range from deletion and never crosses calendars", async () => {
+  for (const outcome of ["moved", "cancelled", 404, 410, 503]) {
+    const f = centerFixture({ fetch: async (url, init) => {
+      assert.equal(new URL(url).pathname, `${new URL(CENTER_EVENTS).pathname}/${centerId()}`);
+      assert.equal(init.method, "GET");
+      if (typeof outcome === "number") return Response.json({ error: {} }, { status: outcome });
+      if (outcome === "cancelled") return Response.json({ id: centerId(), status: "cancelled" });
+      return Response.json(centerRemote({ start: { date: "2030-01-01" }, end: { date: "2030-01-03" } }));
+    } });
+    const cookie = await connect(f), body = { action: "center", operation: "get", eventId: centerId() };
+    const response = await request(f.handler, body, { cookie });
+    assert.equal(response.status, outcome === 503 ? 503 : 200);
+    if (outcome === "moved") assert.equal(response.data.item.start.date, "2030-01-01");
+    else if (outcome !== 503) assert.equal(response.data.item, null);
+    else assert.equal(response.data.item, undefined, "temporary failures must not look deleted");
+    const before = f.calls.length;
+    assert.equal((await request(f.handler, { ...body, calendarId: CALENDAR }, { cookie })).status, 400);
+    assert.equal((await request(f.handler, { ...body, eventId: "../counseling" }, { cookie })).status, 400);
+    assert.equal(f.calls.length, before);
+  }
+});
+
+test("center list accepts the complete three-year window but bounds excessively wide scans", async () => {
+  const f = centerFixture(), cookie = await connect(f);
+  const result = await center(f.handler, cookie, { from: "2025-01-01", to: "2027-12-31" });
+  assert.equal(result.status, 200);
+  assert.equal(new URL(f.calls.at(-1).url).searchParams.get("timeMax"), "2028-01-01T00:00:00+09:00");
+  const before = f.calls.length;
+  assert.equal((await center(f.handler, cookie, { from: "2025-01-01", to: "2028-01-10" })).status, 400);
+  assert.equal(f.calls.length, before);
 });

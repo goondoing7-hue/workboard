@@ -3,6 +3,9 @@ import { createPortal } from "react-dom";
 import { CalendarDays, RefreshCw, X } from "lucide-react";
 import { parseGoogleCalendarId, mergeGoogleCalendar } from "./googleCalendarDomain.mjs";
 import { useGoogleCalendarWriter, CalendarWriteControls } from "./googleCalendarWriter.jsx";
+import { counselingCalendarRequest } from "./googleCalendarSession.mjs";
+import { readGoogleCalendar } from "./googleCalendarRead.mjs";
+import { CenterCalendarPanel } from "./centerCalendar.jsx";
 
 export function useGoogleCalendar({ data, setData, active, isReservationStored }) {
   const writer = useGoogleCalendarWriter({ data, setData, active, isReservationStored });
@@ -22,14 +25,10 @@ export function useGoogleCalendar({ data, setData, active, isReservationStored }
     const controller = new AbortController(); request.current = controller;
     lastAttempt.current = Date.now(); setState("loading"); setError("");
     const year = Number(new Intl.DateTimeFormat("en", { timeZone: "Asia/Seoul", year: "numeric" }).format(new Date()));
-    const params = new URLSearchParams({ calendarId, from: `${year - 1}-01-01`, to: `${year + 2}-01-01` });
-    const timeout = setTimeout(() => controller.abort(), 25000);
+    const timeout = setTimeout(() => controller.abort(), 55000);
     try {
-      const response = await fetch(`/api/google-calendar?${params}`, { signal: controller.signal, cache: "no-store" });
-      const contentType = response.headers.get("content-type") || "";
-      if (!contentType.includes("application/json")) throw new Error("이 실행 환경에서는 캘린더 연결을 지원하지 않습니다. 업무보드 서버로 열어 주세요.");
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "구글 캘린더를 불러오지 못했습니다.");
+      const payload = await readGoogleCalendar({ calendarId, from: `${year - 1}-01-01`, to: `${year + 2}-01-01`,
+        signal: controller.signal, authenticatedRead: counselingCalendarRequest });
       if (request.current !== controller || !current.current.active) return false;
       // Validate before entering React's state updater so failures remain visible
       // as connection errors and never replace the board with a render error.
@@ -74,7 +73,7 @@ export function useGoogleCalendar({ data, setData, active, isReservationStored }
   } };
 }
 
-export function GoogleCalendarButton({ ui, connection }) {
+export function GoogleCalendarButton({ ui, connection, centerConnection }) {
   const { C, FONT, useDismiss } = ui;
   const [open, setOpen] = useState(false);
   const trigger = useRef(null);
@@ -85,9 +84,9 @@ export function GoogleCalendarButton({ ui, connection }) {
   const dismiss = useDismiss(() => setOpen(false));
   const { config, state, error, writer } = connection;
   const enabled = !!(config.enabled && config.calendarId);
-  const busy = state === "loading" || writer?.working || writer?.auth.connecting || writer?.auth.checking;
+  const busy = state === "loading" || writer?.working || writer?.auth.connecting || writer?.auth.checking || centerConnection?.state === "syncing";
   const recovering = !!writer?.auth.retryable;
-  const failed = !!(error || writer?.error);
+  const failed = !!(error || writer?.error || centerConnection?.error || centerConnection?.needsPermission || centerConnection?.pendingRows?.some((event) => ["error", "conflict"].includes(event.centerSync?.state)));
   const reconnect = enabled && config.writeEnabled && !writer?.connected && !recovering;
   const status = busy ? "캘린더 동기화 중" : recovering ? "구글 연결 자동 복구 중" : failed ? "캘린더 연결 확인 필요" : reconnect ? (writer?.auth.configured === false ? "구글 자동 연결 유지 설정 필요" : "구글 권한 연결 필요") : enabled ? "캘린더 연결됨" : "캘린더 연결 안 됨";
   const color = busy || recovering ? C.navy : failed ? C.seal : reconnect ? C.amber : enabled ? C.green : C.faint;
@@ -126,6 +125,7 @@ export function GoogleCalendarButton({ ui, connection }) {
         }}>
         <div className="flex items-center justify-between" style={{ marginBottom: 10 }}><span id={titleId} style={{ fontSize: 15, fontWeight: 750 }}>구글 캘린더 설정</span><button type="button" aria-label="구글 캘린더 설정 닫기" onClick={() => setOpen(false)} className="wb-btn inline-flex items-center justify-center rounded-full" style={{ width: 34, height: 34, background: "transparent", color: C.muted, border: "none", cursor: "pointer" }}><X size={18} aria-hidden="true" /></button></div>
         <GoogleCalendarPanel ui={ui} connection={connection} />
+        {centerConnection && <div style={{ marginTop: 10 }}><CenterCalendarPanel ui={ui} connection={centerConnection} /></div>}
       </div>
     </div>, document.body)}
   </>;
@@ -141,7 +141,7 @@ export function GoogleCalendarPanel({ ui, connection }) {
   return <Card style={{ padding: "11px 14px" }}>
     <div className="flex items-center gap-2 flex-wrap">
       <CalendarDays size={14} color={C.green} />
-      <div className="flex-1 min-w-0"><div style={{ fontSize: 12, fontWeight: 750 }}>구글 캘린더{enabled && <span style={{ color: C.green, fontSize: 10, marginLeft: 7 }}>연결됨</span>}</div>
+      <div className="flex-1 min-w-0"><div style={{ fontSize: 12, fontWeight: 750 }}>상담 캘린더{enabled && <span style={{ color: C.green, fontSize: 10, marginLeft: 7 }}>연결됨</span>}</div>
         {enabled && <div className="truncate" style={{ color: C.muted, fontSize: 10.5, marginTop: 2 }}>{config.name || "상담 캘린더"} · {count}건{config.fetchedAt ? ` · ${new Date(config.fetchedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Seoul" })} 확인` : ""}</div>}
       </div>
       {enabled && <Btn size="sm" icon={RefreshCw} disabled={loading} onClick={refresh}>{loading ? "불러오는 중" : "새로고침"}</Btn>}
@@ -150,7 +150,7 @@ export function GoogleCalendarPanel({ ui, connection }) {
     {error && <div role="alert" style={{ color: C.seal, fontSize: 11.5, marginTop: 8 }}>{error} 기존 예약은 유지됩니다.</div>}
     {enabled && writer && <CalendarWriteControls ui={ui} config={config} writer={writer} />}
     {expanded && <div style={{ borderTop: `1px solid ${C.rule}`, marginTop: 9, paddingTop: 11 }}>
-      <div style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.7, marginBottom: 9 }}>상담 전용 캘린더의 공개 일정을 상담·일정에 함께 표시합니다. 앱이 열려 있을 때 5분마다 확인하며, 구글의 공개 일정 반영에는 시간이 걸릴 수 있습니다.</div>
+      <div style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.7, marginBottom: 9 }}>상담 전용 캘린더를 상담·일정에 함께 표시합니다. 구글 권한을 연결한 상담 캘린더는 비공개 상태로도 가져옵니다. 앱이 열려 있을 때 5분마다 확인합니다.</div>
       <label style={{ fontSize: 11, fontWeight: 700, color: C.muted }}>구글 캘린더 공유 링크<input value={link} onChange={(e) => setLink(e.target.value)} placeholder="공유 링크 또는 캘린더 ID" style={{ width: "100%", marginTop: 5, padding: "9px 10px", border: `1px solid ${C.rule}`, borderRadius: 8, background: C.surface, color: C.ink, fontFamily: FONT, fontSize: 12 }} /></label>
       <div className="flex items-center gap-2 mt-2"><Btn size="sm" kind="solid" disabled={loading || !link.trim()} onClick={async () => { if (await connect(link)) setExpanded(false); }}>{loading ? "연결 확인 중" : "연결하고 가져오기"}</Btn>
         {enabled && <button type="button" onClick={disconnect} style={{ color: C.muted, background: "none", border: "none", fontSize: 11, cursor: "pointer", minHeight: 34 }}>연결 중지</button>}</div>

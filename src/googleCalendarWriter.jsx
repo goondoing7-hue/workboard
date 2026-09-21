@@ -175,7 +175,7 @@ export function CalendarWriteControls({ ui, config, writer }) {
         {!!writer.pending && writer.connected && <Btn size="sm" onClick={writer.retry} disabled={writer.working}>{writer.working ? "등록 중" : "대기 예약 다시 전송"}</Btn>}
         {(config.writeEnabled || writer.disconnectFailed) && <Btn size="sm" onClick={writer.stop}>{writer.disconnectFailed ? "연결 해제 다시 시도" : "자동 등록 끄기 · 연결 해제"}</Btn>}</div>
       {!persistentSetup && <details style={{ fontSize: 11, color: C.muted, lineHeight: 1.75 }}><summary style={{ cursor: "pointer" }}>처음 연결할 때</summary><ol style={{ paddingLeft: 18, margin: "6px 0" }}><li>Google Cloud에서 Calendar API를 사용 설정합니다.</li><li>웹 애플리케이션 OAuth 클라이언트의 승인된 JavaScript 원본에 <code>{window.location.origin}</code>을 추가합니다. 로컬 실행은 <code>http://localhost</code>도 추가합니다.</li><li>앱이 테스트 상태면 본인 계정을 테스트 사용자로 추가합니다.</li><li>위에 클라이언트 ID를 저장한 뒤 구글 계정으로 권한을 연결합니다.</li></ol></details>}
-      <span style={{ fontSize: 10.5, color: C.faint, lineHeight: 1.6 }}>구글 승인 화면은 본인이 소유한 캘린더의 일정 권한을 요청합니다. 이 업무보드는 위에 연결한 캘린더만 사용합니다. {persistentSetup ? "앱이 열려 있으면 연결과 대기 예약을 자동으로 확인하며, 닫힌 동안 바뀐 구글 일정은 다시 열 때 가져옵니다. 브라우저의 사이트 데이터를 지우면 다시 연결해야 합니다." : "자동 연결 유지에는 서버 설정이 필요합니다."} 기존 예약 전체를 자동 전송하지 않습니다.</span>
+      <span style={{ fontSize: 10.5, color: C.faint, lineHeight: 1.6 }}>구글 승인 화면은 본인이 소유한 캘린더의 일정 권한을 요청합니다. 이 업무보드는 설정한 상담·센터 캘린더만 사용합니다. 계정 권한은 함께 사용하므로 연결 해제 시 센터 일정도 다시 연결해야 합니다. {persistentSetup ? "앱이 열려 있으면 연결과 대기 예약을 자동으로 확인하며, 닫힌 동안 바뀐 구글 일정은 다시 열 때 가져옵니다. 브라우저의 사이트 데이터를 지우면 다시 연결해야 합니다." : "자동 연결 유지에는 서버 설정이 필요합니다."} 기존 예약 전체를 자동 전송하지 않습니다.</span>
     </div>}
   </div>;
 }
