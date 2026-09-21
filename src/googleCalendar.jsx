@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { CalendarDays, RefreshCw, X } from "lucide-react";
 import { parseGoogleCalendarId, mergeGoogleCalendar } from "./googleCalendarDomain.mjs";
 import { useGoogleCalendarWriter, CalendarWriteControls } from "./googleCalendarWriter.jsx";
@@ -70,6 +71,62 @@ export function useGoogleCalendar({ data, setData, active, isReservationStored }
     setData((previous) => ({ ...previous, googleCalendar: { ...previous.googleCalendar, enabled: false } }));
     setError(""); setState("idle");
   } };
+}
+
+export function GoogleCalendarButton({ ui, connection }) {
+  const { C, FONT, useDismiss } = ui;
+  const [open, setOpen] = useState(false);
+  const trigger = useRef(null);
+  const dialog = useRef(null);
+  const titleId = React.useId();
+  const statusId = React.useId();
+  const dialogId = React.useId();
+  const dismiss = useDismiss(() => setOpen(false));
+  const { config, state, error, writer } = connection;
+  const enabled = !!(config.enabled && config.calendarId);
+  const busy = state === "loading" || writer?.working || writer?.auth.connecting;
+  const failed = !!(error || writer?.error);
+  const reconnect = enabled && config.writeEnabled && !writer?.connected;
+  const status = busy ? "캘린더 동기화 중" : failed ? "캘린더 연결 확인 필요" : reconnect ? "구글 쓰기 권한 재연결 필요" : enabled ? "캘린더 연결됨" : "캘린더 연결 안 됨";
+  const color = busy ? C.navy : failed ? C.seal : reconnect ? C.amber : enabled ? C.green : C.faint;
+  const background = busy ? C.navySoft : failed ? C.sealSoft : reconnect ? C.amberSoft : enabled ? C.greenSoft : "#F1F3F0";
+  useEffect(() => {
+    if (!open) return;
+    const before = document.activeElement;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    dialog.current?.querySelector("button")?.focus();
+    return () => {
+      document.body.style.overflow = overflow;
+      if (before?.isConnected) before.focus?.();
+      else trigger.current?.focus();
+    };
+  }, [open]);
+  return <>
+    <button ref={trigger} type="button" aria-label="구글 캘린더 설정" aria-describedby={statusId} aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? dialogId : undefined}
+      title={`구글 캘린더 · ${status}`} onClick={() => setOpen(true)} className="wb-btn inline-flex items-center justify-center rounded-full shrink-0"
+      style={{ position: "relative", width: 36, height: 36, background, color, border: "none", cursor: "pointer" }}>
+      {busy ? <RefreshCw size={16} strokeWidth={2.2} className="wb-spin" aria-hidden="true" /> : <CalendarDays size={16} strokeWidth={2.2} aria-hidden="true" />}
+      {!busy && (enabled || failed) && <span aria-hidden="true" style={{ position: "absolute", right: 6, bottom: 6, width: 6, height: 6, borderRadius: "50%", background: color, boxShadow: `0 0 0 2px ${background}` }} />}
+    </button>
+    <span id={statusId} className="sr-only">{status}</span>
+    {open && createPortal(<div className="fixed inset-0 flex items-center justify-center wb-fade" style={{ zIndex: 80, background: "rgba(26,33,30,0.4)", padding: 12 }} {...dismiss}>
+      <div ref={dialog} id={dialogId} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}
+        className="w-full rounded-2xl wb-sheet" style={{ maxWidth: 480, maxHeight: "85dvh", overflowY: "auto", overscrollBehavior: "contain", background: C.bg, color: C.ink, fontFamily: FONT, padding: 14, boxShadow: "0 14px 50px rgba(26,33,30,0.18)" }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") { e.stopPropagation(); setOpen(false); }
+          if (e.key !== "Tab") return;
+          const nodes = [...dialog.current.querySelectorAll("button, input, select, textarea, a[href], summary, [tabindex]:not([tabindex='-1'])")].filter((node) => !node.disabled && node.getClientRects().length && node.tabIndex >= 0);
+          const first = nodes[0], last = nodes[nodes.length - 1];
+          if (!first) { e.preventDefault(); dialog.current.focus(); }
+          else if (e.shiftKey && (document.activeElement === first || document.activeElement === dialog.current)) { e.preventDefault(); last.focus(); }
+          else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }}>
+        <div className="flex items-center justify-between" style={{ marginBottom: 10 }}><span id={titleId} style={{ fontSize: 15, fontWeight: 750 }}>구글 캘린더 설정</span><button type="button" aria-label="구글 캘린더 설정 닫기" onClick={() => setOpen(false)} className="wb-btn inline-flex items-center justify-center rounded-full" style={{ width: 34, height: 34, background: "transparent", color: C.muted, border: "none", cursor: "pointer" }}><X size={18} aria-hidden="true" /></button></div>
+        <GoogleCalendarPanel ui={ui} connection={connection} />
+      </div>
+    </div>, document.body)}
+  </>;
 }
 
 export function GoogleCalendarPanel({ ui, connection }) {

@@ -3,7 +3,7 @@ import { Plus, X, Check, Pencil, ChevronLeft, ChevronRight, CalendarDays, Users,
 import { CLIENT_STATUSES, RESERVATION_STATUSES, clientStatus, reservationStatus,
   validateReservation, reservationScheduleChanged, addMinutes, sessionNumber } from "./counselingDomain.mjs";
 import { externalReservation, externalReservationTitle, reservationLastDate } from "./googleCalendarDomain.mjs";
-import { GoogleCalendarPanel, GoogleReservationEditor } from "./googleCalendar.jsx";
+import { GoogleReservationEditor } from "./googleCalendar.jsx";
 
 // 기존 업무보드의 색과 공용 UI를 함께 사용합니다. 데이터는 WorkBoard에 그대로 둡니다.
 const UI = createContext(null);
@@ -208,7 +208,7 @@ function ReservationRow({ reservation: r, clients, reservations, onEdit, onLog, 
   </div>;
 }
 
-function CounselContent({ data, calendarConnection, onSaveClient, onDeleteClient, onSaveResv, onDeleteResv, onAddType, onSaveLog }) {
+function CounselContent({ data, onSaveClient, onDeleteClient, onSaveResv, onDeleteResv, onAddType, onSaveLog }) {
   const ui = useUI();
   const { C, Card, Btn, Label, LogSheet, todayISO, fmtDateK, DEFAULT_TYPES } = useUI();
   const inp = useInputStyle();
@@ -245,7 +245,6 @@ function CounselContent({ data, calendarConnection, onSaveClient, onDeleteClient
   };
   const closeClientEditor = () => { setClientEditor(null); if (pendingReservation) { setReservationEditor(pendingReservation); setPendingReservation(null); } };
   return <div className="flex flex-col gap-3">
-    {calendarConnection && <GoogleCalendarPanel ui={ui} connection={calendarConnection} />}
     {activeClient ? <>
       <button type="button" onClick={() => setOpenId(null)} className="wb-btn inline-flex items-center gap-1" style={{ alignSelf: "flex-start", padding: "7px 0", background: "none", border: "none", color: C.muted, fontSize: 12, cursor: "pointer" }}><ChevronLeft size={15} />내담자 목록</button>
       <Card style={{ padding: 16 }}>

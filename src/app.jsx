@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import CounselBoard from "./counseling.jsx";
-import { useGoogleCalendar, GoogleCalendarPanel, GoogleReservationEditor } from "./googleCalendar.jsx";
+import { useGoogleCalendar, GoogleCalendarButton, GoogleReservationEditor } from "./googleCalendar.jsx";
 import { externalReservation, externalReservationTitle } from "./googleCalendarDomain.mjs";
 import { mergeReservation, reservationStatus, reservationScheduleChanged, validateReservation } from "./counselingDomain.mjs";
 import { documentScheduleOf, documentScheduleError, patchDocumentSchedule, toggleDocument, formatDocumentTime } from "./documentSchedule.mjs";
@@ -2221,6 +2221,7 @@ export default function WorkBoard() {
             )}
             <div className="flex items-center gap-2 shrink-0">
               <SyncBadge state={syncState} on={syncReady(sync)} onClick={() => setShowSettings(true)} />
+              <GoogleCalendarButton ui={COUNSEL_UI} connection={calendarConnection} />
               <button onClick={() => setShowSettings(true)} className="wb-btn rounded-xl shrink-0"
                 style={{ background: C.surface, border: "1px solid " + C.rule, padding: 9, cursor: "pointer", color: C.muted }}>
                 <Settings2 size={17} strokeWidth={2.1} />
@@ -2401,7 +2402,7 @@ export default function WorkBoard() {
           )}
 
           {tab === "plan" && (
-            <><GoogleCalendarPanel ui={COUNSEL_UI} connection={calendarConnection} /><PlanView data={data} rows={planRowsAll} events={data.events || []} onOpenSub={openSubPage}
+            <><PlanView data={data} rows={planRowsAll} events={data.events || []} onOpenSub={openSubPage}
               onGoCounsel={() => setTab("counsel")}
               onOpenProject={(pid) => { setTab("projects"); setOpenProject(pid); setOpenSub(null); }}
               onSaveResv={saveCounselReservation}
@@ -2449,7 +2450,7 @@ export default function WorkBoard() {
           )}
 
           {tab === "counsel" && (
-            <CounselBoard data={data} ui={COUNSEL_UI} calendarConnection={calendarConnection}
+            <CounselBoard data={data} ui={COUNSEL_UI}
               onSaveClient={(v) => setData((d) => {
                 const list = d.clients || [];
                 if (v.id && list.some((c) => c.id === v.id)) return { ...d, clients: list.map((c) => (c.id === v.id ? { ...c, ...v, updatedAt: Date.now() } : c)) };
