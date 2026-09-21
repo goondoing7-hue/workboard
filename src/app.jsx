@@ -2673,6 +2673,12 @@ function ContactsView({ data, onSave, onDelete }) {
   const [filter, setFilter] = useState("all");
   const [sheet, setSheet] = useState(null);
   const [openId, setOpenId] = useState(null);
+  const [memoDrafts, setMemoDrafts] = useState({});
+  const clearMemoDraft = (id) => setMemoDrafts((drafts) => {
+    const next = { ...drafts };
+    delete next[id];
+    return next;
+  });
 
   const list = data.contacts || [];
   const info = (pid) => {
@@ -2730,6 +2736,9 @@ function ContactsView({ data, onSave, onDelete }) {
           {shown.map((c, idx) => {
             const nfo = info(c.pid);
             const open = openId === c.id;
+            const hasMemoDraft = Object.prototype.hasOwnProperty.call(memoDrafts, c.id);
+            const editingMemo = hasMemoDraft || !(c.memo || "").trim();
+            const memoValue = hasMemoDraft ? memoDrafts[c.id] : c.memo || "";
             return (
               <div key={c.id} style={{ borderTop: idx === 0 ? "none" : "1px solid " + C.rule }}>
                 <button onClick={() => setOpenId(open ? null : c.id)}
@@ -2766,25 +2775,38 @@ function ContactsView({ data, onSave, onDelete }) {
 
                 {open && (
                   <div style={{ paddingBottom: 11 }}>
-                    <div className="flex items-center gap-1.5 flex-wrap">
+                    <div role="group" aria-label={`${c.name || c.org || "연락처"} 메모`} className="rounded-lg"
+                      style={{ background: "#F7F8F6", border: "1px solid " + C.rule, padding: "9px 10px" }}>
+                      <div className="flex items-center justify-between gap-2" style={{ marginBottom: 6 }}>
+                        <Label>메모</Label>
+                        {editingMemo ? (
+                          <div className="flex items-center gap-1.5">
+                            {hasMemoDraft && <Btn size="sm" onClick={() => clearMemoDraft(c.id)}>취소</Btn>}
+                            <Btn size="sm" kind="solid" icon={Check} disabled={memoValue.trim() === (c.memo || "").trim()}
+                              onClick={() => { onSave({ id: c.id, memo: memoValue.trim() }); clearMemoDraft(c.id); }}>저장</Btn>
+                          </div>
+                        ) : (
+                          <Btn size="sm" icon={Pencil} onClick={() => setMemoDrafts((drafts) => ({ ...drafts, [c.id]: c.memo || "" }))}>수정</Btn>
+                        )}
+                      </div>
+                      {editingMemo ? (
+                        <textarea aria-label={`${c.name || c.org || "연락처"} 메모 내용`} value={memoValue} rows={3}
+                          onChange={(e) => setMemoDrafts((drafts) => ({ ...drafts, [c.id]: e.target.value }))}
+                          placeholder="기억해 둘 내용을 적어 주세요"
+                          style={{ width: "100%", display: "block", boxSizing: "border-box", padding: "8px 10px", borderRadius: 7,
+                            border: "1px solid " + C.rule, background: C.surface, color: C.ink, fontFamily: FONT,
+                            fontSize: 12.5, lineHeight: 1.6, resize: "vertical" }} />
+                      ) : (
+                        <div style={{ fontSize: 12.5, lineHeight: 1.6, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{c.memo}</div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-wrap" style={{ marginTop: 7 }}>
                       {c.phone && (
-                        <>
-                          <a href={"tel:" + c.phone.replace(/[^\d+]/g, "")} className="wb-btn inline-flex items-center gap-1 rounded-lg"
-                            style={{ background: C.navy, color: "#fff", fontSize: 11.5, fontWeight: 700,
-                              padding: "6px 11px", textDecoration: "none" }}>
-                            <Phone size={12} strokeWidth={2.4} /> 전화
-                          </a>
-                          <a href={"sms:" + c.phone.replace(/[^\d+]/g, "")} className="wb-btn inline-flex items-center gap-1 rounded-lg"
-                            style={{ background: C.surface, color: C.ink, border: "1px solid " + C.rule,
-                              fontSize: 11.5, fontWeight: 700, padding: "6px 11px", textDecoration: "none" }}>
-                            문자
-                          </a>
-                          <button onClick={() => { navigator.clipboard?.writeText(c.phone); }}
-                            className="wb-btn rounded-lg" style={{ background: C.surface, color: C.muted,
-                              border: "1px solid " + C.rule, fontSize: 11.5, fontWeight: 700, padding: "6px 11px", cursor: "pointer" }}>
-                            번호 복사
-                          </button>
-                        </>
+                        <button onClick={() => { navigator.clipboard?.writeText(c.phone); }}
+                          className="wb-btn rounded-lg" style={{ background: C.surface, color: C.muted,
+                            border: "1px solid " + C.rule, fontSize: 11.5, fontWeight: 700, padding: "6px 11px", cursor: "pointer" }}>
+                          번호 복사
+                        </button>
                       )}
                       {c.email && (
                         <a href={"mailto:" + c.email} className="wb-btn inline-flex items-center gap-1 rounded-lg"
@@ -2802,12 +2824,6 @@ function ContactsView({ data, onSave, onDelete }) {
                     {c.email && (
                       <div style={{ fontSize: 11.5, color: C.muted, marginTop: 7 }}>{c.email}</div>
                     )}
-                    {c.memo && (
-                      <div className="rounded-lg" style={{ background: "#F7F8F6", border: "1px solid " + C.rule,
-                        padding: "8px 10px", marginTop: 7, fontSize: 12, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
-                        {c.memo}
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
@@ -2819,8 +2835,8 @@ function ContactsView({ data, onSave, onDelete }) {
       {sheet && (
         <ContactSheet init={sheet} projects={data.projects}
           onClose={() => setSheet(null)}
-          onDelete={sheet.id ? () => { onDelete(sheet.id); setSheet(null); setOpenId(null); } : null}
-          onSave={(v) => { onSave(v); setSheet(null); }} />
+          onDelete={sheet.id ? () => { onDelete(sheet.id); clearMemoDraft(sheet.id); setSheet(null); setOpenId(null); } : null}
+          onSave={(v) => { onSave(v); clearMemoDraft(v.id); setSheet(null); }} />
       )}
     </div>
   );
