@@ -77,6 +77,24 @@ if ("serviceWorker" in navigator) {
 `;
 
 fs.writeFileSync(path.join(dist, "index.html"), html);
+// The assessment has its own entry point: opening it never mounts the workboard,
+// reads client records, starts calendar sync, or persists assessment answers.
+const assessment = esbuild.buildSync({
+  absWorkingDir: R(), entryPoints: [R("src/adhd.jsx")], bundle: true,
+  minify: !development, format: "iife", jsx: "automatic", write: false,
+  define: { "process.env.NODE_ENV": JSON.stringify(development ? "development" : "production") },
+});
+const assessmentJs = assessment.outputFiles[0].text.replace(/<\/script/gi, "<\\/script");
+fs.writeFileSync(path.join(dist, "adhd.html"), `<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#24486b" />
+<meta name="robots" content="noindex, nofollow" />
+<meta name="description" content="만 18세 이상을 위한 한국어 ASRS v1.1 6문항 ADHD 자가 선별검사. 응답은 저장하거나 전송하지 않습니다." />
+<title>성인 ADHD 자가 평가 · 마음 살피기</title>
+<style>${fs.readFileSync(R("src/adhd.css"), "utf8")}</style></head>
+<body><div id="root"></div><noscript>자가 평가를 진행하려면 브라우저에서 JavaScript를 허용해 주세요.</noscript><script>${assessmentJs}</script></body></html>`);
 for (const f of fs.readdirSync(R("public"))) fs.copyFileSync(R("public", f), path.join(dist, f));
 
 console.log(`✓ ${path.basename(dist)}/index.html (${Math.round(Buffer.byteLength(html) / 1024)}KB) 생성 완료`);
+console.log(`✓ ${path.basename(dist)}/adhd.html 생성 완료`);

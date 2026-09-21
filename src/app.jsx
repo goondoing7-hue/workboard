@@ -2458,7 +2458,13 @@ export default function WorkBoard() {
           )}
 
           {tab === "counsel" && (
-            <CounselBoard data={data} ui={COUNSEL_UI}
+            <><div className="flex justify-end mb-3">
+              <a href="./adhd.html" target="_blank" rel="noopener noreferrer"
+                className="wb-btn inline-flex items-center gap-2 rounded-xl"
+                style={{ padding: "10px 14px", background: C.navySoft, color: C.navy, fontSize: 13, fontWeight: 700, textDecoration: "none" }}>
+                <ListChecks size={16} />성인 ADHD 자가 평가 ↗
+              </a>
+            </div><CounselBoard data={data} ui={COUNSEL_UI}
               onSaveClient={(v) => setData((d) => {
                 const list = d.clients || [];
                 if (v.id && list.some((c) => c.id === v.id)) return { ...d, clients: list.map((c) => (c.id === v.id ? { ...c, ...v, updatedAt: Date.now() } : c)) };
@@ -2474,7 +2480,7 @@ export default function WorkBoard() {
                 return list.includes(t) ? d : { ...d, resvTypes: [...list, t] };
               })}
               onSaveLog={(rid, log) => setData((d) => ({ ...d,
-                resv: (d.resv || []).map((r) => (r.id === rid ? { ...r, log } : r)) }))} />
+                resv: (d.resv || []).map((r) => (r.id === rid ? { ...r, log } : r)) }))} /></>
           )}
 
           {tab === "contacts" && (

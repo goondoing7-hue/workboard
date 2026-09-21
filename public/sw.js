@@ -1,6 +1,6 @@
 /* 업무보드 — 오프라인 캐시 */
-const CACHE = "workboard-v6";
-const ASSETS = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
+const CACHE = "workboard-v7";
+const ASSETS = ["./", "./index.html", "./adhd.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 const ASSET_URLS = new Set(ASSETS.map((asset) => new URL(asset, self.location.href).href));
 
 self.addEventListener("install", (e) => {
@@ -28,13 +28,18 @@ self.addEventListener("fetch", (e) => {
 
   if (e.request.mode === "navigate") {
     e.respondWith((async () => {
+      // An assessment navigation must never fall back to the workboard, even
+      // with query parameters or an unavailable assessment cache entry.
+      const isAssessment = url.pathname === new URL("./adhd.html", self.location.href).pathname;
+      const fallback = isAssessment ? "./adhd.html" : "./index.html";
+      const cachedPage = async () => await caches.match(e.request) || await caches.match(fallback);
       let response;
       try { response = await fetch(e.request, { cache: "no-cache" }); }
       catch {
-        return await caches.match(e.request) || await caches.match("./index.html") || Response.error();
+        return await cachedPage() || Response.error();
       }
       if (response.status >= 500) {
-        const saved = await caches.match(e.request) || await caches.match("./index.html");
+        const saved = await cachedPage();
         if (saved) return saved;
       }
       if (response.ok && response.type === "basic") {
