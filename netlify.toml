@@ -8,6 +8,15 @@
   node_bundler = "zisi"
   included_files = ["server/googleCalendar.cjs"]
 
+[functions."google-calendar-auth"]
+  node_bundler = "zisi"
+  included_files = ["server/googleCalendarSession.cjs"]
+
+[[redirects]]
+  from = "/api/google-calendar-auth"
+  to = "/.netlify/functions/google-calendar-auth"
+  status = 200
+
 [[redirects]]
   from = "/api/google-calendar"
   to = "/.netlify/functions/google-calendar"

@@ -53,9 +53,10 @@ export function useGoogleCalendar({ data, setData, active, isReservationStored }
     check();
     const timer = setInterval(check, 5 * 60 * 1000);
     window.addEventListener("focus", check);
+    window.addEventListener("online", check);
     document.addEventListener("visibilitychange", check);
     return () => {
-      clearInterval(timer); window.removeEventListener("focus", check); document.removeEventListener("visibilitychange", check);
+      clearInterval(timer); window.removeEventListener("focus", check); window.removeEventListener("online", check); document.removeEventListener("visibilitychange", check);
       if (request.current) { request.current.abort(); request.current = null; setState("idle"); }
       lastAttempt.current = 0;
     };
@@ -84,12 +85,13 @@ export function GoogleCalendarButton({ ui, connection }) {
   const dismiss = useDismiss(() => setOpen(false));
   const { config, state, error, writer } = connection;
   const enabled = !!(config.enabled && config.calendarId);
-  const busy = state === "loading" || writer?.working || writer?.auth.connecting;
+  const busy = state === "loading" || writer?.working || writer?.auth.connecting || writer?.auth.checking;
+  const recovering = !!writer?.auth.retryable;
   const failed = !!(error || writer?.error);
-  const reconnect = enabled && config.writeEnabled && !writer?.connected;
-  const status = busy ? "캘린더 동기화 중" : failed ? "캘린더 연결 확인 필요" : reconnect ? "구글 쓰기 권한 재연결 필요" : enabled ? "캘린더 연결됨" : "캘린더 연결 안 됨";
-  const color = busy ? C.navy : failed ? C.seal : reconnect ? C.amber : enabled ? C.green : C.faint;
-  const background = busy ? C.navySoft : failed ? C.sealSoft : reconnect ? C.amberSoft : enabled ? C.greenSoft : "#F1F3F0";
+  const reconnect = enabled && config.writeEnabled && !writer?.connected && !recovering;
+  const status = busy ? "캘린더 동기화 중" : recovering ? "구글 연결 자동 복구 중" : failed ? "캘린더 연결 확인 필요" : reconnect ? (writer?.auth.configured === false ? "구글 자동 연결 유지 설정 필요" : "구글 권한 연결 필요") : enabled ? "캘린더 연결됨" : "캘린더 연결 안 됨";
+  const color = busy || recovering ? C.navy : failed ? C.seal : reconnect ? C.amber : enabled ? C.green : C.faint;
+  const background = busy || recovering ? C.navySoft : failed ? C.sealSoft : reconnect ? C.amberSoft : enabled ? C.greenSoft : "#F1F3F0";
   useEffect(() => {
     if (!open) return;
     const before = document.activeElement;

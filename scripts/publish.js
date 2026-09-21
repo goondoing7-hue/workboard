@@ -3,7 +3,7 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const root = path.resolve(__dirname, '..');
-const sourcePaths = ['.gitignore', 'AGENTS.md', 'README.md', 'package.json', 'package-lock.json',
+const sourcePaths = ['.gitignore', '.env.example', 'AGENTS.md', 'README.md', 'package.json', 'package-lock.json',
   'tailwind.config.js', 'vercel.json', 'netlify.toml', 'src', 'scripts', 'server', 'api',
   'netlify/functions', 'public', 'tests', 'docs'];
 const allowed = (file) => sourcePaths.some((entry) => file === entry || file.startsWith(`${entry}/`));

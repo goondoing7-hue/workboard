@@ -8,7 +8,8 @@
 - `src/counseling.jsx`: 상담 화면, 내담자 등록·수정, 예약·회기 관리.
 - `src/counselingDomain.mjs`: 상담 상태 호환 처리, 예약 검증·중복 확인, 회기 계산.
 - `src/googleCalendar.jsx`, `src/googleCalendarDomain.mjs`: 공개 상담 캘린더 연결·갱신, 외부 예약의 ID·내담자 연결·상담일지 보존.
-- `src/googleCalendarWriter.jsx`, `src/googleCalendarAuth.mjs`, `src/googleCalendarPublish.mjs`, `src/googleCalendarWriteDomain.mjs`: 명시적 OAuth 연결 후 새 상담 예약 등록. 토큰은 메모리 전용이며 공개 전송 필드를 제목·일정·지정 장소로 제한한다. 전송 전에 로컬 저장 성공을 확인하고 재시도는 동일 이벤트 ID를 사용한다.
+- `src/googleCalendarWriter.jsx`, `src/googleCalendarSession.mjs`, `src/googleCalendarPublish.mjs`, `src/googleCalendarWriteDomain.mjs`: 명시적 OAuth 연결 후 새 상담 예약 등록. 서버 설정 시 HttpOnly 암호화 쿠키로 권한을 복원·갱신한다. 설정 전에는 `googleCalendarAuth.mjs`의 메모리 전용 임시 연결을 유지한다. 공개 전송 필드는 제목·일정·지정 장소로 제한하며, 로컬 저장 성공 후 같은 이벤트 ID로 전송·재시도한다.
+- `server/googleCalendarSession.cjs`, `api/google-calendar-auth.js`: 지정 캘린더의 서버 인증·쓰기 API. 비밀번호·세션 키는 서버 환경변수 전용이며 번들·저장 데이터·로그에 노출하지 않는다. 배포 설정과 Google Testing 7일 제한은 `docs/CALENDAR_AUTO_SYNC.md` 참고.
 - `server/googleCalendar.cjs`: Google 공개 iCal 읽기 API. 로컬 서버 및 Vercel/Netlify 함수에서 사용. 반복 일정은 별도 worker에서 제한 시간 안에 해석한다.
 - `src/documentSchedule.mjs`: 서류 계획·완료 일시 저장과 검증. 기존 `sub.docs` boolean을 유지하고 `sub.docSchedule`에 일시를 추가한다.
 - `tests/*.test.mjs`: 상담·서류 데이터 호환성과 시간 처리 검증. `node --test tests/*.test.mjs`로 실행.

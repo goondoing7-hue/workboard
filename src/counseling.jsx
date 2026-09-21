@@ -173,7 +173,7 @@ function ReservationEditor({ initial, clients, reservations, types, onAddType, o
         <Field label="진행 방식"><select value={value.method} onChange={(e) => patch("method", e.target.value)} style={inp}>{[...new Set(["대면", "전화", "온라인", "방문", value.method])].filter(Boolean).map((method) => <option key={method}>{method}</option>)}</select></Field>
       </div>
       <Field label="예약 메모"><textarea value={value.memo} onChange={(e) => patch("memo", e.target.value)} rows={2} placeholder="준비물이나 예약 시 참고할 내용" style={{ ...inp, resize: "vertical" }} /></Field>
-      {!initial?.id && autoCalendar && <div style={{ color: C.navy, background: C.navySoft, borderRadius: 9, padding: "9px 11px", fontSize: 11.5, lineHeight: 1.6 }}>구글 캘린더에도 ‘상담 예약’으로 등록됩니다. 이름·메모·상담일지는 보내지 않으며, 권한이 만료되면 연결 후 전송합니다.</div>}
+      {!initial?.id && autoCalendar && <div style={{ color: C.navy, background: C.navySoft, borderRadius: 9, padding: "9px 11px", fontSize: 11.5, lineHeight: 1.6 }}>구글 캘린더에도 ‘상담 예약’으로 등록됩니다. 이름·메모·상담일지는 보내지 않으며, 구글 연결을 확인한 뒤 자동으로 전송합니다.</div>}
       {error && (attempted || (scheduleError && value.clientId)) && <div role="alert" style={{ borderRadius: 9, padding: "9px 11px", background: C.sealSoft, color: C.seal, fontSize: 12, lineHeight: 1.5 }}>{error}</div>}
       {!error && value.clientId && <div style={{ color: C.muted, fontSize: 11.5 }}>{fmtDateK(value.date)} {value.start ? `${value.start}–${value.end}` : "시간 미정"} · {RESERVATION_STATUSES[value.status]}</div>}
     </div>

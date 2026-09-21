@@ -3,6 +3,9 @@
   "outputDirectory": "dist",
   "framework": null,
   "functions": {
+    "api/google-calendar-auth.js": {
+      "includeFiles": "server/googleCalendarSession.cjs"
+    },
     "api/google-calendar.js": {
       "includeFiles": "server/googleCalendar.cjs"
     }

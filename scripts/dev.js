@@ -4,9 +4,13 @@ const fs = require("node:fs");
 const path = require("node:path");
 const http = require("node:http");
 const { execFileSync } = require("node:child_process");
-const { handler: googleCalendarHandler } = require("../server/googleCalendar.cjs");
 
 const root = path.resolve(__dirname, "..");
+// Local secrets are server-only and are never passed to the browser bundle.
+const localEnv = path.join(root, ".env.local");
+if (fs.existsSync(localEnv)) process.loadEnvFile(localEnv);
+const { handler: googleCalendarHandler } = require("../server/googleCalendar.cjs");
+const { handler: googleCalendarAuthHandler } = require("../server/googleCalendarSession.cjs");
 const preview = process.argv.includes("--preview");
 const output = path.join(root, preview ? "dist" : ".dev");
 const port = Number(process.env.PORT || 3000);
@@ -31,6 +35,10 @@ const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; ch
 const server = http.createServer((req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Content-Type-Options", "nosniff");
+  if (new URL(req.url, "http://localhost").pathname === "/api/google-calendar-auth") {
+    googleCalendarAuthHandler(req, res);
+    return;
+  }
   if (new URL(req.url, "http://localhost").pathname === "/api/google-calendar") {
     googleCalendarHandler(req, res);
     return;
