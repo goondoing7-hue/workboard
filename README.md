@@ -1,5 +1,20 @@
 # 업무보드
 
+## 이 작업 폴더에서 이어서 개발하기
+
+Claude ZIP을 가져와 Windows 로컬 개발 환경을 구성했습니다. 실행 및 기존 업무 데이터 이전 방법은 [로컬 작업 안내](docs/LOCAL_SETUP.md)를 참고하세요. 기존 `CLAUDE.md`와 아래 배포 설명은 이전 자료이므로 실제 코드와 함께 확인합니다.
+
+```powershell
+npm.cmd ci              # 처음 설치하거나 의존성을 다시 설치할 때
+npm.cmd run dev         # http://localhost:3000, 소스 저장 시 재빌드
+npm.cmd run build       # 배포용 dist 생성
+npm.cmd run preview     # dist 미리보기 (개발 서버를 종료한 뒤 실행)
+```
+
+개발 서버에서 재빌드가 끝나면 브라우저를 새로고침합니다. 업무 데이터는 ZIP에 포함되어 있지 않으며, 기존 앱의 JSON 백업 파일로 가져올 수 있습니다.
+
+---
+
 청소년상담복지센터 업무용 개인 관리 보드. 사업 → 세부사업 → 할 일, 그리고 필수 행정서류 점검을 한곳에서 관리합니다.
 
 - 서버 없이 동작하는 단일 HTML (오프라인 사용 가능)
@@ -22,6 +37,8 @@ npm run dev       # 빌드 후 로컬 서버로 확인
 
 ## 배포
 
+이 작업 폴더는 기존 GitHub 저장소와 Vercel 온라인 주소에 연결되어 있습니다. 수정 완료 후 `npm.cmd run publish -- "변경 내용"`으로 검증·업로드하면 자동 배포됩니다. [현재 배포 안내](docs/DEPLOYMENT.md)를 참고하세요.
+
 ### Vercel (GitHub 연동, 권장)
 
 1. 이 저장소를 GitHub에 올립니다
@@ -33,7 +50,7 @@ npm run dev       # 빌드 후 로컬 서버로 확인
 ### Netlify
 
 `netlify.toml`이 들어 있어 저장소를 연결하면 동일하게 동작합니다.
-빌드 없이 쓰시려면 `npm run build` 후 `dist` 폴더를 [app.netlify.com/drop](https://app.netlify.com/drop)에 끌어다 놓아도 됩니다. 이 경우 **배포 후 `Make public`을 눌러야** 휴대폰에서 열립니다.
+구글 캘린더 가져오기에는 서버 함수가 필요하므로 소스 저장소를 연결해 배포합니다. `dist` 폴더만 올리는 정적 배포는 캘린더 API를 포함하지 않습니다.
 
 ---
 

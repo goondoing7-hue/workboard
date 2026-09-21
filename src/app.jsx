@@ -1,4 +1,10 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
+import CounselBoard from "./counseling.jsx";
+import { useGoogleCalendar, GoogleCalendarPanel, GoogleReservationEditor } from "./googleCalendar.jsx";
+import { externalReservation, externalReservationTitle } from "./googleCalendarDomain.mjs";
+import { mergeReservation, reservationStatus, reservationScheduleChanged, validateReservation } from "./counselingDomain.mjs";
+import { documentScheduleOf, documentScheduleError, patchDocumentSchedule, toggleDocument, formatDocumentTime } from "./documentSchedule.mjs";
 import {
   Plus, Check, ChevronRight, ChevronLeft, Trash2, Inbox, Send,
   Clock, X, Settings2, FolderClosed, CalendarDays, AlertTriangle,
@@ -151,6 +157,7 @@ function gToken(clientId, interactive) {
           gAuth.client = window.google.accounts.oauth2.initTokenClient({
             client_id: clientId,
             scope: DRIVE_SCOPE,
+            include_granted_scopes: false,
             callback: (r) => {
               if (r && r.access_token) {
                 gAuth.token = r.access_token;
@@ -172,7 +179,7 @@ function gToken(clientId, interactive) {
           });
         }
         gAuth._ok = res; gAuth._no = rej;
-        gAuth.client.requestAccessToken({ prompt: interactive ? "consent" : "" });
+        gAuth.client.requestAccessToken({ prompt: interactive ? "consent" : "", include_granted_scopes: false });
       } catch (e) { rej(e); }
     }).catch(rej);
   });
@@ -267,7 +274,7 @@ const VIEW_KEY = "workboard:view";
 const lastView = () => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch (e) { return {}; } };
 const saveView = (v) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch (e) {} };
 
-const APP_VERSION = "2026.09.10g";
+const APP_VERSION = "2026.09.21";
 /* ============================================================
    잠금 — 비밀번호로 내용 자체를 잠급니다.
    화면만 가리는 게 아니라 저장되는 내용이 암호문이 됩니다.
@@ -659,11 +666,13 @@ const TIME_LIST = (() => {
   return out;
 })();
 
-function TimePick({ value, onChange, style, disabled }) {
+/* 날짜 선택기 — 브라우저 기본 달력을 쓰지 않아 시트가 닫히지 않습니다 */
+function DatePick({ value, onChange, style, disabled }) {
   const [open, setOpen] = useState(false);
+  const [cur, setCur] = useState((value || todayISO()).slice(0, 7));
   const boxRef = useRef(null);
-  const listRef = useRef(null);
 
+  useEffect(() => { if (open) setCur((value || todayISO()).slice(0, 7)); }, [open]);
   useEffect(() => {
     if (!open) return;
     const away = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false); };
@@ -671,12 +680,26 @@ function TimePick({ value, onChange, style, disabled }) {
     return () => document.removeEventListener("pointerdown", away);
   }, [open]);
 
-  useEffect(() => {
-    if (!open || !listRef.current) return;
-    const i = TIME_LIST.indexOf(value);
-    const at = i >= 0 ? i : Math.floor(9 * 60 / TIME_STEP);
-    listRef.current.scrollTop = Math.max(0, at * 30 - 90);
-  }, [open, value]);
+  const shift = (n) => {
+    const d = new Date(cur + "-01T00:00:00");
+    d.setMonth(d.getMonth() + n);
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    setCur(d.toISOString().slice(0, 7));
+  };
+
+  const cells = (() => {
+    const first = new Date(cur + "-01T00:00:00");
+    const pad = first.getDay();
+    const out = [];
+    for (let i = 0; i < 42; i++) {
+      const c = new Date(first);
+      c.setDate(1 - pad + i);
+      c.setMinutes(c.getMinutes() - c.getTimezoneOffset());
+      const iso = c.toISOString().slice(0, 10);
+      out.push({ iso, num: Number(iso.slice(8, 10)), inMonth: iso.slice(0, 7) === cur, wd: i % 7 });
+    }
+    return out.slice(0, out[35].inMonth || out[35].iso.slice(0, 7) === cur ? 42 : 35);
+  })();
 
   return (
     <span ref={boxRef} style={{ position: "relative", display: "inline-block", ...(style || {}) }}>
@@ -684,19 +707,168 @@ function TimePick({ value, onChange, style, disabled }) {
         className="wb-btn w-full text-left rounded-lg"
         style={{ padding: "9px 11px", fontSize: 13.5, fontWeight: 650,
           border: "1px solid " + (open ? C.navy : C.rule),
+          background: disabled ? "#F1F3F0" : C.surface, color: disabled ? C.faint : (value ? C.ink : C.faint),
+          cursor: disabled ? "default" : "pointer", fontVariantNumeric: "tabular-nums" }}>
+        {value ? fmtDateK(value) : "날짜 고르기"}
+      </button>
+      {open && (
+        <div className="rounded-xl wb-fade" style={{ position: "absolute", top: "calc(100% + 4px)", left: 0,
+          width: 250, background: C.surface, border: "1px solid " + C.rule,
+          boxShadow: "0 8px 24px rgba(26,33,30,0.16)", zIndex: 50, padding: 10 }}>
+          <div className="flex items-center justify-between mb-2">
+            <button onClick={() => shift(-1)} className="wb-btn"
+              style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 3 }}>
+              <ChevronLeft size={16} />
+            </button>
+            <span style={{ fontSize: 13, fontWeight: 750 }}>
+              {Number(cur.slice(0, 4))}년 {Number(cur.slice(5, 7))}월
+            </span>
+            <button onClick={() => shift(1)} className="wb-btn"
+              style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 3 }}>
+              <ChevronRight size={16} />
+            </button>
+          </div>
+          <div className="grid grid-cols-7" style={{ gap: 1, marginBottom: 2 }}>
+            {["일", "월", "화", "수", "목", "금", "토"].map((d, i) => (
+              <div key={d} style={{ fontSize: 9.5, fontWeight: 700, textAlign: "center",
+                color: i === 0 ? C.seal : i === 6 ? C.navy : C.faint }}>{d}</div>
+            ))}
+          </div>
+          <div className="grid grid-cols-7" style={{ gap: 1 }}>
+            {cells.map((c) => {
+              const on = c.iso === value;
+              const today = c.iso === todayISO();
+              return (
+                <button key={c.iso} onClick={() => { onChange(c.iso); setOpen(false); }}
+                  className="wb-btn flex items-center justify-center rounded-lg"
+                  style={{ height: 28, fontSize: 12, fontWeight: on ? 800 : 600, cursor: "pointer",
+                    border: "none", fontVariantNumeric: "tabular-nums",
+                    background: on ? C.navy : today ? C.navySoft : "transparent",
+                    color: on ? "#fff" : c.inMonth ? (c.wd === 0 ? C.seal : C.ink) : "#C6CCC5" }}>
+                  {c.num}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex items-center justify-between" style={{ marginTop: 6 }}>
+            <button onClick={() => { onChange(""); setOpen(false); }} className="wb-btn"
+              style={{ background: "none", border: "none", color: C.faint, fontSize: 11.5, fontWeight: 650, cursor: "pointer" }}>
+              지우기
+            </button>
+            <button onClick={() => { onChange(todayISO()); setOpen(false); }} className="wb-btn"
+              style={{ background: "none", border: "none", color: C.navy, fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>
+              오늘
+            </button>
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
+function TimePick({ value, onChange, style, disabled, label = "시간 선택" }) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState(null);
+  const boxRef = useRef(null);
+  const triggerRef = useRef(null);
+  const listRef = useRef(null);
+  const listId = React.useId();
+  // 이전에 직접 입력한 5분 단위 밖의 시각도 그대로 선택된 상태로 보여 줍니다.
+  const options = useMemo(() => value && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value) && !TIME_LIST.includes(value)
+    ? [...TIME_LIST, value].sort() : TIME_LIST, [value]);
+
+  useLayoutEffect(() => {
+    if (!open) { setPosition(null); return; }
+    const place = () => {
+      const anchor = triggerRef.current?.getBoundingClientRect();
+      if (!anchor) return;
+      const viewport = window.visualViewport;
+      const top = (viewport?.offsetTop || 0) + 8;
+      const left = (viewport?.offsetLeft || 0) + 8;
+      const right = left + (viewport?.width || window.innerWidth) - 16;
+      let bottom = top + (viewport?.height || window.innerHeight) - 16;
+      const navigation = document.querySelector("[data-workboard-nav]")?.getBoundingClientRect();
+      if (!triggerRef.current.closest('[role="dialog"]') && navigation) bottom = Math.min(bottom, navigation.top - 8);
+      if (anchor.bottom <= top || anchor.top >= bottom) { setOpen(false); return; }
+      const above = Math.max(0, anchor.top - top - 4);
+      const below = Math.max(0, bottom - anchor.bottom - 4);
+      const upwards = below < 216 && above > below;
+      const maxHeight = Math.min(216, upwards ? above : below);
+      const width = Math.min(132, right - left);
+      setPosition({ left: Math.max(left, Math.min(anchor.left, right - width)),
+        top: upwards ? anchor.top - maxHeight - 4 : anchor.bottom + 4, width, maxHeight });
+    };
+    const onScroll = (event) => { if (!listRef.current?.contains(event.target)) place(); };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", onScroll, true);
+    window.visualViewport?.addEventListener("resize", place);
+    window.visualViewport?.addEventListener("scroll", place);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", onScroll, true);
+      window.visualViewport?.removeEventListener("resize", place);
+      window.visualViewport?.removeEventListener("scroll", place);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const away = (e) => {
+      if (!boxRef.current?.contains(e.target) && !listRef.current?.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", away);
+    return () => document.removeEventListener("pointerdown", away);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !position || !listRef.current) return;
+    const at = Math.max(0, options.indexOf(value || "09:00"));
+    const selected = listRef.current.children[at];
+    listRef.current.scrollTop = Math.max(0, selected.offsetTop - (listRef.current.clientHeight - selected.offsetHeight) / 2);
+    selected.focus({ preventScroll: true });
+  }, [open, !!position, value, options]);
+
+  const close = () => { setOpen(false); triggerRef.current?.focus({ preventScroll: true }); };
+  const keys = (event) => {
+    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); return; }
+    if (event.key === "Tab") { close(); return; }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    event.preventDefault(); event.stopPropagation();
+    const items = [...listRef.current.children];
+    const index = items.indexOf(document.activeElement);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+      : Math.max(0, Math.min(items.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)));
+    items[next].focus({ preventScroll: true });
+    const item = items[next], list = listRef.current;
+    if (item.offsetTop < list.scrollTop) list.scrollTop = item.offsetTop;
+    else if (item.offsetTop + item.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = item.offsetTop + item.offsetHeight - list.clientHeight;
+  };
+
+  return (
+    <span ref={boxRef} style={{ position: "relative", display: "inline-block", ...(style || {}) }}>
+      <button ref={triggerRef} type="button" onClick={() => !disabled && setOpen(!open)} disabled={disabled}
+        aria-label={label} aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? listId : undefined}
+        onKeyDown={(e) => { if (["ArrowDown", "ArrowUp"].includes(e.key) && !disabled) { e.preventDefault(); setOpen(true); } }}
+        className="wb-btn w-full text-left rounded-lg"
+        style={{ padding: "9px 11px", minHeight: 42, fontSize: 13.5, fontWeight: 650,
+          border: "1px solid " + (open ? C.navy : C.rule),
           background: disabled ? "#F1F3F0" : C.surface, color: disabled ? C.faint : C.ink,
           cursor: disabled ? "default" : "pointer", fontVariantNumeric: "tabular-nums" }}>
         {value || "--:--"}
       </button>
-      {open && (
-        <div ref={listRef} className="rounded-lg wb-fade"
-          style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, minWidth: 104, maxHeight: 216,
-            overflowY: "auto", background: C.surface, border: "1px solid " + C.rule,
-            boxShadow: "0 8px 24px rgba(26,33,30,0.16)", zIndex: 40, padding: 4 }}>
-          {TIME_LIST.map((t) => {
+      {open && position && createPortal(
+        <div ref={listRef} id={listId} role="listbox" aria-label={`${label} 목록`} className="rounded-lg wb-fade"
+          onKeyDown={keys} onClick={(e) => e.stopPropagation()}
+          style={{ position: "fixed", ...position,
+            overflowY: "auto", overscrollBehavior: "contain",
+            background: C.surface, border: "1px solid " + C.rule,
+            boxShadow: "0 8px 24px rgba(26,33,30,0.16)", zIndex: 120, padding: 4, fontFamily: FONT }}>
+          {options.map((t) => {
             const on = t === value;
             return (
-              <button key={t} onClick={() => { onChange(t); setOpen(false); }}
+              <button key={t} type="button" role="option" aria-selected={on} tabIndex={-1}
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); onChange(t); close(); }}
                 className="wb-btn w-full text-left rounded"
                 style={{ display: "block", height: 30, lineHeight: "30px", padding: "0 10px",
                   fontSize: 13, fontWeight: on ? 800 : 600, cursor: "pointer", border: "none",
@@ -706,7 +878,7 @@ function TimePick({ value, onChange, style, disabled }) {
               </button>
             );
           })}
-        </div>
+        </div>, document.body
       )}
     </span>
   );
@@ -736,8 +908,7 @@ function DueEditor({ value, onChange, onClose }) {
               border: "1px solid " + (due === q.v ? C.navy : C.rule) }}>{q.t}</button>
         ))}
       </div>
-      <input type="date" value={due} onChange={(e) => onChange({ ...value, due: e.target.value })} className="w-full rounded-lg"
-        style={{ padding: "9px 11px", fontSize: 13.5, border: "1px solid " + C.rule, background: C.surface, color: C.ink }} />
+      <DatePick value={due} onChange={(t) => onChange({ ...value, due: t })} style={{ flex: 1 }} />
       <div className="flex rounded-lg mt-2.5" style={{ background: "#EBEEE9", padding: 3, gap: 3, opacity: due ? 1 : 0.5, pointerEvents: due ? "auto" : "none" }}>
         {[{ k: "none", t: "날짜만" }, { k: "start", t: "시작 시간" }, { k: "range", t: "시간 범위" }].map((o) => {
           const on = mode === o.k;
@@ -750,11 +921,11 @@ function DueEditor({ value, onChange, onClose }) {
       </div>
       {mode !== "none" && (
         <div className="flex items-center gap-2 mt-2.5">
-          <TimePick value={dueTime} onChange={(t) => onChange({ ...value, dueTime: t })} style={{ flex: 1 }} />
+          <TimePick label="할 일 시작 시간" value={dueTime} onChange={(t) => onChange({ ...value, dueTime: t })} style={{ flex: 1 }} />
           {mode === "range" && (
             <>
               <span style={{ color: C.faint }}>–</span>
-              <TimePick value={dueEnd} onChange={(t) => onChange({ ...value, dueEnd: t })} style={{ flex: 1 }} />
+              <TimePick label="할 일 종료 시간" value={dueEnd} onChange={(t) => onChange({ ...value, dueEnd: t })} style={{ flex: 1 }} />
             </>
           )}
         </div>
@@ -1035,19 +1206,128 @@ const AddLine = ({ placeholder, onAdd }) => {
 /* ------------------------------------------------------------------
    결재란 도장판
 ------------------------------------------------------------------- */
-const StampCell = ({ name, checked, onToggle }) => (
-  <button onClick={onToggle} className="wb-btn relative flex flex-col items-center justify-center rounded-xl"
-    style={{ height: 86, background: checked ? C.surface : "#F7F8F6", border: checked ? `1px solid ${C.rule}` : `1px dashed #CFD5CD`, cursor: "pointer" }}>
-    <span style={{ position: "absolute", top: 7, left: 0, right: 0, textAlign: "center", fontSize: 10.5, letterSpacing: "0.06em", fontWeight: 700, color: checked ? C.ink : C.faint }}>{name}</span>
-    {checked ? (
-      <span className="wb-stamp flex items-center justify-center rounded-full" style={{ width: 40, height: 40, marginTop: 12, border: `2.5px solid ${C.seal}`, color: C.seal }}>
-        <Check size={20} strokeWidth={3.2} />
-      </span>
-    ) : <span className="rounded-full" style={{ width: 40, height: 40, marginTop: 12, border: "1.5px dashed #D6DBD5" }} />}
-  </button>
-);
+const StampCell = ({ name, checked, schedule, onToggle, onEdit }) => {
+  const planned = formatDocumentTime(schedule.plannedDate, schedule.plannedTime);
+  const completed = schedule.completedAt && formatDocumentTime(schedule.completedAt.slice(0, 10), schedule.completedAt.slice(11, 16));
+  return (
+    <div className="flex flex-col items-center rounded-xl" style={{ padding: "10px 6px 7px", minWidth: 0,
+      background: checked ? C.surface : "#F7F8F6", border: checked ? `1px solid ${C.rule}` : "1px dashed #CFD5CD" }}>
+      <span style={{ fontSize: 11.5, fontWeight: 750, color: C.ink }}>{name}</span>
+      <button onClick={onToggle} aria-label={`${name} ${checked ? "완료 취소" : "완료"}`} aria-pressed={checked}
+        title={checked ? "완료 취소" : "완료하고 현재 일시 기록"}
+        className="wb-btn flex items-center justify-center gap-1.5 rounded-lg"
+        style={{ margin: "7px 0 5px", padding: "3px 7px", background: "transparent", border: "none", cursor: "pointer",
+          color: checked ? C.seal : C.muted, fontSize: 11.5, fontWeight: 700 }}>
+        <span className={`${checked ? "wb-stamp" : ""} flex items-center justify-center rounded-full`}
+          style={{ width: 29, height: 29, border: checked ? `2px solid ${C.seal}` : "1.5px dashed #BAC4BB" }}>
+          <Check size={15} strokeWidth={checked ? 3.2 : 1.8} style={{ opacity: checked ? 1 : 0.45 }} />
+        </span>
+        {checked ? "완료됨" : "완료"}
+      </button>
+      <button onClick={onEdit} aria-label={`${name} 계획 및 완료 일시 수정`}
+        className="wb-btn w-full rounded-lg" title="계획 및 완료 일시 수정"
+        style={{ padding: "5px 2px", background: checked ? "#F7F8F6" : C.surface, border: "none", cursor: "pointer",
+          fontSize: 10.5, fontVariantNumeric: "tabular-nums", lineHeight: 1.7 }}>
+        <span className="flex items-center justify-center gap-1" style={{ color: planned ? C.navy : C.faint }}>
+          {planned ? `계획 ${planned}` : "계획 미정"}<Pencil size={9} />
+        </span>
+        <span className="block" style={{ color: checked ? C.green : C.faint }}>
+          {checked ? (completed ? `완료 ${completed}` : "완료일 미기록") : "미완료"}
+        </span>
+      </button>
+    </div>
+  );
+};
 
-const DocPanel = ({ sub, onToggleDoc, onSetDocMode }) => {
+function DocScheduleSheet({ name, schedule, checked, onSave, onClose }) {
+  const dismiss = useDismiss(onClose);
+  const [value, setValue] = useState({ ...schedule });
+  const [error, setError] = useState("");
+  const formRef = useRef(null);
+  useEffect(() => {
+    const previous = document.activeElement;
+    formRef.current?.querySelector("input")?.focus();
+    const keydown = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); onClose(); }
+      if (e.key === "Tab") {
+        const fields = [...(formRef.current?.querySelectorAll("input:not(:disabled), button:not(:disabled)") || [])];
+        if (!fields.length) return;
+        const first = fields[0], last = fields[fields.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    };
+    document.addEventListener("keydown", keydown);
+    return () => { document.removeEventListener("keydown", keydown); previous?.focus?.(); };
+  }, []);
+  const patch = (p) => { setValue((v) => ({ ...v, ...p })); setError(""); };
+  const save = (e) => {
+    e.preventDefault();
+    const message = documentScheduleError(value);
+    if (message) { setError(message); return; }
+    onSave(value);
+  };
+  const inputStyle = { width: "100%", minWidth: 0, padding: "10px 11px", border: "1px solid " + C.rule,
+    borderRadius: 9, background: C.surface, color: C.ink, fontSize: 13.5, fontFamily: FONT, colorScheme: "light" };
+  return (
+    <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade"
+      style={{ background: "rgba(26,33,30,0.4)", zIndex: 70 }} {...dismiss}>
+      <form ref={formRef} onSubmit={save} role="dialog" aria-modal="true" aria-labelledby="doc-schedule-title"
+        className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
+        style={{ maxWidth: 430, background: C.bg, padding: 20, maxHeight: "90dvh", overflowY: "auto" }}>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <Label>서류 일정</Label>
+            <div id="doc-schedule-title" style={{ fontSize: 18, fontWeight: 750, marginTop: 3 }}>{name}</div>
+          </div>
+          <button type="button" onClick={onClose} aria-label="서류 일정 닫기" className="wb-btn rounded-lg"
+            style={{ border: "none", background: "transparent", color: C.muted, cursor: "pointer", padding: 6 }}><X size={20} /></button>
+        </div>
+        <div style={{ marginTop: 20 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 750, color: C.navy, marginBottom: 7 }}>계획 일시</div>
+          <div className="grid grid-cols-2 gap-2">
+            <label style={{ minWidth: 0 }}>
+              <span className="block" style={{ fontSize: 11.5, color: C.muted, marginBottom: 5 }}>계획 날짜</span>
+              <input type="date" aria-label="계획 날짜" value={value.plannedDate}
+                onChange={(e) => patch({ plannedDate: e.target.value, ...(!e.target.value ? { plannedTime: "" } : {}) })} style={inputStyle} />
+            </label>
+            <label style={{ minWidth: 0 }}>
+              <span className="block" style={{ fontSize: 11.5, color: C.muted, marginBottom: 5 }}>시간 <span style={{ color: C.faint }}>선택</span></span>
+              <input type="time" aria-label="계획 시간" value={value.plannedTime} disabled={!value.plannedDate}
+                onChange={(e) => patch({ plannedTime: e.target.value })} style={{ ...inputStyle, opacity: value.plannedDate ? 1 : 0.45 }} />
+            </label>
+          </div>
+          <div className="flex justify-between gap-2" style={{ marginTop: 7, fontSize: 11.5, color: C.faint }}>
+            <span>날짜만 정해 두어도 됩니다.</span>
+            {(value.plannedDate || value.plannedTime) && <button type="button" onClick={() => patch({ plannedDate: "", plannedTime: "" })}
+              className="wb-btn" style={{ color: C.muted, border: "none", background: "none", padding: 0, cursor: "pointer", fontSize: 11.5 }}>계획 지우기</button>}
+          </div>
+        </div>
+        <div style={{ borderTop: "1px solid " + C.rule, marginTop: 18, paddingTop: 16 }}>
+          <label className="block" style={{ fontSize: 12.5, fontWeight: 750, color: checked ? C.green : C.muted }}>
+            완료 일시
+            {checked && <input type="datetime-local" aria-label="완료 일시" value={value.completedAt}
+              onChange={(e) => patch({ completedAt: e.target.value })} style={{ ...inputStyle, marginTop: 8, fontWeight: 400 }} />}
+          </label>
+          <div style={{ marginTop: 7, fontSize: 11.5, color: C.faint, lineHeight: 1.6 }}>
+            {checked ? (schedule.completedAt ? "완료할 때 자동 기록한 일시를 수정할 수 있습니다." : "기존 완료 서류입니다. 알고 있는 완료 일시를 입력해 주세요.")
+              : "완료 버튼을 누르면 현재 날짜와 시간이 자동 기록됩니다."}
+          </div>
+        </div>
+        {error && <div role="alert" style={{ color: C.seal, fontSize: 12, marginTop: 12 }}>{error}</div>}
+        <div className="flex justify-end gap-2" style={{ marginTop: 20 }}>
+          <button type="button" onClick={onClose} className="wb-btn rounded-xl"
+            style={{ padding: "10px 16px", border: "1px solid " + C.rule, background: C.surface, color: C.muted, fontWeight: 650, cursor: "pointer" }}>취소</button>
+          <button type="submit" className="wb-btn rounded-xl"
+            style={{ padding: "10px 20px", border: "1px solid " + C.navy, background: C.navy, color: "#fff", fontWeight: 700, cursor: "pointer" }}>저장</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+const DocPanel = ({ sub, onToggleDoc, onPatchDocSchedule, onSetDocMode }) => {
+  const [editing, setEditing] = useState(null);
   const mode = docModeOf(sub);
   const list = docListOf(sub);
   const left = list.filter((d) => !sub.docs?.[d]);
@@ -1088,9 +1368,13 @@ const DocPanel = ({ sub, onToggleDoc, onSetDocMode }) => {
 
       {list.length > 0 && (
         <div className="grid grid-cols-2 sm:grid-cols-3" style={{ gap: 8, marginTop: 14 }}>
-          {list.map((d) => <StampCell key={d} name={d} checked={!!sub.docs?.[d]} onToggle={() => onToggleDoc(d)} />)}
+          {list.map((d) => <StampCell key={d} name={d} checked={!!sub.docs?.[d]} schedule={documentScheduleOf(sub, d)}
+            onToggle={() => onToggleDoc(d)} onEdit={() => setEditing(d)} />)}
         </div>
       )}
+      {editing && <DocScheduleSheet key={sub.id + editing} name={editing} checked={!!sub.docs?.[editing]}
+        schedule={documentScheduleOf(sub, editing)} onClose={() => setEditing(null)}
+        onSave={(patch) => { onPatchDocSchedule(editing, patch); setEditing(null); }} />}
     </Card>
   );
 };
@@ -1184,10 +1468,10 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
       pName: i >= 0 ? data.projects[i].name : "센터 일정",
       pColor: i >= 0 ? colorOf(data.projects[i], i) : "#5A6673" };
   });
-  const counselRows = (data.resv || []).map((r) => {
+  const counselRows = (data.resv || []).filter((r) => reservationStatus(r) === "scheduled").map((r) => {
     const c = (data.clients || []).find((x) => x.id === r.clientId);
-    return { id: r.id, kind: "counsel", text: (c ? c.name : "상담") + " · " + r.type,
-      due: r.date, dueTime: r.start || "", dueEnd: r.end || "", place: "", pid: "", sName: "",
+    return { id: r.id, kind: "counsel", text: (c ? c.name : externalReservation(r) ? externalReservationTitle(r) : "상담") + " · " + r.type,
+      due: r.date, dueTime: r.start || "", dueEnd: r.end || "", place: r.place || "", pid: "", sName: "",
       pName: "상담", pColor: C.green };
   });
   const merged = [...rows.map((r) => ({ ...r, kind: "todo" })), ...planRows, ...counselRows];
@@ -1457,6 +1741,7 @@ export default function WorkBoard() {
   const [needPw, setNeedPw] = useState(false);
   const keyRef = useRef(null);
   const [storageOK, setStorageOK] = useState(true);
+  const [storedData, setStoredData] = useState(null);
   const [sync, setSync] = useState(() => loadSync());
   const [syncState, setSyncState] = useState("off");   // off | syncing | ok | error
   const [syncMsg, setSyncMsg] = useState("");
@@ -1477,11 +1762,31 @@ export default function WorkBoard() {
     const next = typeof arg === "function" ? arg(prev) : arg;
     return { ...next, updatedAt: Date.now() };
   });
+  const calendarConnection = useGoogleCalendar({ data, setData, active: loaded && !needPw, isReservationStored: (reservation) => !!storedData?.resv?.includes(reservation) });
 
+  /* 모르는 항목까지 그대로 살려 둡니다.
+     예전 버전이 깔린 기기가 동기화해도 새 기능의 내용이 지워지지 않게 하기 위함입니다. */
   const normalize = (p) => ({
-    projects: p.projects || [], memos: p.memos || [], notes: p.notes || [], dueOrder: p.dueOrder || [], topOrder: p.topOrder || [], planHidden: p.planHidden || [], events: p.events || [], clients: p.clients || [], resv: p.resv || [], resvTypes: p.resvTypes || [], contacts: p.contacts || [],
+    ...p,
+    projects: p.projects || [], memos: p.memos || [], notes: p.notes || [],
+    dueOrder: p.dueOrder || [], topOrder: p.topOrder || [], planHidden: p.planHidden || [],
+    events: p.events || [], clients: p.clients || [], resv: p.resv || [],
+    resvTypes: p.resvTypes || [], contacts: p.contacts || [],
     dueManual: !!p.dueManual, updatedAt: p.updatedAt || 0,
   });
+
+  /* 상대 쪽에 아예 없는 항목은 내 것을 지키고, 비어 있다고 온 것만 받아들입니다 */
+  const KEEP = ["projects", "memos", "notes", "events", "clients", "resv", "resvTypes", "contacts"];
+  const guard = (incoming, mine) => {
+    if (!mine) return incoming;
+    const out = { ...incoming };
+    KEEP.forEach((k) => {
+      const has = Object.prototype.hasOwnProperty.call(incoming, k);
+      if (!has && Array.isArray(mine[k]) && mine[k].length) out[k] = mine[k];
+    });
+    if (!Object.prototype.hasOwnProperty.call(incoming, "googleCalendar") && mine.googleCalendar) out.googleCalendar = mine.googleCalendar;
+    return out;
+  };
 
   const pull = async (cfg, base) => {
     if (!syncReady(cfg)) return;
@@ -1497,11 +1802,12 @@ export default function WorkBoard() {
         remote = JSON.parse(await openText(keyRef.current, remote));
       }
       const mine = base || dataRef.current;
+      if (remote) remote = guard(remote, mine);
       if (remote && (remote.updatedAt || 0) > (mine.updatedAt || 0)) {
         const n = normalize(remote);
         lastPushed.current = JSON.stringify(n);
         setDataRaw(n);
-        await store.set(JSON.stringify(n));
+        await store.set(keyRef.current ? await sealText(keyRef.current, JSON.stringify(n)) : JSON.stringify(n));
         setSyncState("ok"); setSyncMsg("다른 기기에서 바뀐 내용을 받았습니다");
         setTimeout(() => setSyncMsg(""), 4000);
       } else if (!remote || (mine.updatedAt || 0) > (remote.updatedAt || 0)) {
@@ -1537,11 +1843,19 @@ export default function WorkBoard() {
   /* 저장 — 이 기기에 먼저, 이어서 클라우드로 */
   useEffect(() => {
     if (!loaded || needPw) return;          /* 잠긴 동안에는 덮어쓰지 않습니다 */
+    const plain = JSON.stringify(data);
+    const savedImmediately = !keyRef.current && !window.storage?.set;
+    if (savedImmediately) {
+      // 브라우저 로컬 저장은 지연하지 않습니다. 저장 직후 새로고침해도 유지됩니다.
+      try { localStorage.setItem(STORAGE_KEY, plain); setStorageOK(true); setStoredData(data); }
+      catch (e) { setStorageOK(false); }
+    }
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
-      const plain = JSON.stringify(data);
       const json = keyRef.current ? await sealText(keyRef.current, plain) : plain;
-      try { setStorageOK(await store.set(json)); } catch (e) { setStorageOK(false); }
+      if (!savedImmediately) {
+        try { const saved = await store.set(json); setStorageOK(saved); if (saved) setStoredData(data); } catch (e) { setStorageOK(false); }
+      }
       const cfg = syncRef.current;
       if (syncReady(cfg) && json !== lastPushed.current) {
         if (cfg.mode === "gdrive" && !gSignedIn()) {
@@ -1667,6 +1981,44 @@ export default function WorkBoard() {
   const mapSub = (pid, sid, fn) => mapProject(pid, (p) => ({ ...p, subs: p.subs.map((s) => (s.id === sid ? fn(s) : s)) }));
   const patchTodo = (pid, sid, tid, patch) => mapSub(pid, sid, (s) => ({ ...s, todos: s.todos.map((t) => (t.id === tid ? { ...t, ...patch } : t)) }));
 
+  // 상담 탭과 캘린더 편집이 같은 검증·상태 변환을 사용합니다.
+  const saveCounselReservation = (patch) => {
+    const current = dataRef.current;
+    const previous = (current.resv || []).find((r) => r.id === patch.id);
+    if (previous?.googleWrite?.state === "sending") { flash("구글에 등록 중입니다. 완료 후 다시 확인해 주세요."); return false; }
+    if (externalReservation(previous)) {
+      if (["date", "start", "end", "place"].some((key) => Object.prototype.hasOwnProperty.call(patch, key) && patch[key] !== previous[key])) {
+        flash("구글에서 가져온 일정의 날짜·시간·장소는 구글 캘린더에서 수정해 주세요."); return false;
+      }
+      if (patch.clientId && !(current.clients || []).some((client) => client.id === patch.clientId)) { flash("연결할 내담자를 다시 선택해 주세요."); return false; }
+      const allowed = Object.fromEntries(["clientId", "type", "status", "done"].filter((key) => Object.prototype.hasOwnProperty.call(patch, key)).map((key) => [key, patch[key]]));
+      if (previous.externalCancelled && Object.prototype.hasOwnProperty.call(allowed, "status")) allowed.externalPreviousStatus = allowed.status;
+      setData((d) => ({ ...d, resv: d.resv.map((r) => r.id === previous.id ? mergeReservation(r, allowed) : r) }));
+      return true;
+    }
+    const next = mergeReservation(previous || { id: uid(), createdAt: Date.now() }, patch);
+    if (previous?.googleWrite?.state === "error" && (["date", "start", "end", "place"].some((key) => next[key] !== previous[key]) || reservationStatus(next) !== reservationStatus(previous))) {
+      flash("구글 등록 여부를 먼저 확인해야 합니다. 상단 권한 설정에서 대기 예약을 다시 전송해 주세요."); return false;
+    }
+    const error = reservationScheduleChanged(previous, next)
+      ? validateReservation(next, current.clients || [], current.resv || []) : "";
+    if (error) { flash(error); return false; }
+    const clean = { ...next, lockClient: undefined, kind: undefined };
+    const calendar = current.googleCalendar;
+    if (!previous && calendar?.enabled && calendar.writeEnabled && calendar.writeCalendarId === calendar.calendarId && reservationStatus(clean) === "scheduled") {
+      clean.googleWrite = { state: "pending", calendarId: calendar.calendarId };
+    }
+    if (clean.googleWrite?.state === "pending" && !["scheduled", "done"].includes(reservationStatus(clean))) delete clean.googleWrite;
+    setData((d) => ({ ...d, resv: previous
+      ? (d.resv || []).map((r) => r.id === clean.id ? clean : r)
+      : [...(d.resv || []), clean] }));
+    return true;
+  };
+  const deleteCounselReservation = (id) => {
+    if ((dataRef.current.resv || []).some((r) => r.id === id && ["sending", "error"].includes(r.googleWrite?.state))) { flash("구글 등록 여부를 먼저 확인해야 합니다. 상단 권한 설정에서 다시 전송해 주세요."); return false; }
+    setData((d) => ({ ...d, resv: (d.resv || []).filter((r) => r.id !== id) }));
+  };
+
   const addProject = (name) => setProjects((ps) => [...ps, { id: uid(), name, color: PALETTE[ps.length % PALETTE.length], subs: [], createdAt: Date.now() }]);
   const addSub = (pid, name) => mapProject(pid, (p) => ({
     ...p,
@@ -1760,6 +2112,16 @@ export default function WorkBoard() {
       return rows.sort((a, b) => (rank.has(a.id) ? rank.get(a.id) : 1e9) - (rank.has(b.id) ? rank.get(b.id) : 1e9) || byTime(a, b));
     }
     return rows.sort(byTime);
+  }, [data]);
+
+  /* 일정 화면은 완료된 것도 회색으로 함께 보여 줍니다 */
+  const planRowsAll = useMemo(() => {
+    const rows = [];
+    data.projects.forEach((p, i) => p.subs.forEach((s2) => s2.todos.forEach((t) => {
+      rows.push({ ...t, pid: p.id, sid: s2.id, pName: p.name, sName: s2.name, pColor: colorOf(p, i),
+        hl: isInbox(s2) ? "" : subColor(s2, liveSubs(p).findIndex((x) => x.id === s2.id), colorOf(p, i)) });
+    })));
+    return rows;
   }, [data]);
 
   /* 메인보드는 날짜가 없는 할 일도 포함합니다 */
@@ -2030,7 +2392,8 @@ export default function WorkBoard() {
           {tab === "projects" && project && sub && (
             <SubDetail sub={sub} color={colorOf(project, projectIdx)}
               onPatch={(patch) => mapSub(project.id, sub.id, (s) => ({ ...s, ...patch }))}
-              onToggleDoc={(d) => mapSub(project.id, sub.id, (s) => ({ ...s, docs: { ...s.docs, [d]: !s.docs?.[d] } }))}
+              onToggleDoc={(d) => mapSub(project.id, sub.id, (s) => toggleDocument(s, d))}
+              onPatchDocSchedule={(d, patch) => mapSub(project.id, sub.id, (s) => patchDocumentSchedule(s, d, patch))}
               onAddTodo={(t) => addTodo(project.id, sub.id, t)}
               onPatchTodo={(tid, patch) => patchTodo(project.id, sub.id, tid, patch)}
               onDeleteTodo={(tid) => mapSub(project.id, sub.id, (s) => ({ ...s, todos: s.todos.filter((t) => t.id !== tid) }))}
@@ -2038,12 +2401,11 @@ export default function WorkBoard() {
           )}
 
           {tab === "plan" && (
-            <PlanView data={data} rows={homeRows} events={data.events || []} onOpenSub={openSubPage}
+            <><GoogleCalendarPanel ui={COUNSEL_UI} connection={calendarConnection} /><PlanView data={data} rows={planRowsAll} events={data.events || []} onOpenSub={openSubPage}
               onGoCounsel={() => setTab("counsel")}
               onOpenProject={(pid) => { setTab("projects"); setOpenProject(pid); setOpenSub(null); }}
-              onSaveResv={(v) => setData((d) => ({ ...d,
-                resv: (d.resv || []).map((r) => (r.id === v.id ? { ...r, ...v, kind: undefined } : r)) }))}
-              onDeleteResv={(id) => setData((d) => ({ ...d, resv: (d.resv || []).filter((r) => r.id !== id) }))}
+              onSaveResv={saveCounselReservation}
+              onDeleteResv={deleteCounselReservation}
               hidden={data.planHidden || []}
               onToggleHidden={(pid) => setData((d) => {
                 const h = d.planHidden || [];
@@ -2083,27 +2445,21 @@ export default function WorkBoard() {
                   }
                   return { ...d, events: [...list, { ...v, id: v.id || uid(), createdAt: Date.now() }] };
                 });
-              }} />
+              }} /></>
           )}
 
           {tab === "counsel" && (
-            <CounselView data={data}
+            <CounselBoard data={data} ui={COUNSEL_UI} calendarConnection={calendarConnection}
               onSaveClient={(v) => setData((d) => {
                 const list = d.clients || [];
-                if (v.id) return { ...d, clients: list.map((c) => (c.id === v.id ? { ...c, ...v } : c)) };
-                return { ...d, clients: [...list, { ...v, id: uid(), createdAt: Date.now() }] };
+                if (v.id && list.some((c) => c.id === v.id)) return { ...d, clients: list.map((c) => (c.id === v.id ? { ...c, ...v, updatedAt: Date.now() } : c)) };
+                return { ...d, clients: [...list, { ...v, id: v.id || uid(), createdAt: Date.now(), updatedAt: Date.now() }] };
               })}
-              onDeleteClient={(id) => setData((d) => ({ ...d,
+              onDeleteClient={(id) => { if ((dataRef.current.resv || []).some((r) => r.clientId === id && ["sending", "error"].includes(r.googleWrite?.state))) { flash("구글 등록 여부를 먼저 확인해야 합니다. 상단 권한 설정에서 다시 전송해 주세요."); return false; } setData((d) => ({ ...d,
                 clients: (d.clients || []).filter((c) => c.id !== id),
-                resv: (d.resv || []).filter((r) => r.clientId !== id) }))}
-              onSaveResv={(v) => setData((d) => {
-                const list = d.resv || [];
-                if (v.id && list.some((r) => r.id === v.id)) {
-                  return { ...d, resv: list.map((r) => (r.id === v.id ? { ...r, ...v, lockClient: undefined } : r)) };
-                }
-                return { ...d, resv: [...list, { ...v, lockClient: undefined, id: uid(), createdAt: Date.now() }] };
-              })}
-              onDeleteResv={(id) => setData((d) => ({ ...d, resv: (d.resv || []).filter((r) => r.id !== id) }))}
+                resv: (d.resv || []).filter((r) => r.clientId !== id || externalReservation(r)).map((r) => r.clientId === id ? { ...r, clientId: "" } : r) })); }}
+              onSaveResv={saveCounselReservation}
+              onDeleteResv={deleteCounselReservation}
               onAddType={(t) => setData((d) => {
                 const list = d.resvTypes && d.resvTypes.length ? d.resvTypes : DEFAULT_TYPES;
                 return list.includes(t) ? d : { ...d, resvTypes: [...list, t] };
@@ -2132,7 +2488,7 @@ export default function WorkBoard() {
         </div>
       </div>
 
-      <div className="fixed bottom-0 left-0 right-0 z-40" style={{ background: "rgba(237,239,236,0.94)", backdropFilter: "blur(8px)", borderTop: "1px solid " + C.rule }}>
+      <div data-workboard-nav className="fixed bottom-0 left-0 right-0 z-40" style={{ background: "rgba(237,239,236,0.94)", backdropFilter: "blur(8px)", borderTop: "1px solid " + C.rule }}>
         <div className="flex" style={{ maxWidth: 760, margin: "0 auto", padding: "7px 4px 13px" }}>
           {[{ k: "home", t: "메인", i: LayoutGrid, badge: 0 },
             { k: "projects", t: "업무", i: FolderClosed, badge: 0 },
@@ -2292,8 +2648,9 @@ function ContactSheet({ init, projects, onSave, onDelete, onClose }) {
             {init && init.id && onDelete && <DeleteBtn onDelete={onDelete} label="삭제" />}
             <div className="flex items-center gap-2" style={{ marginLeft: "auto" }}>
               <Btn size="sm" onClick={onClose}>취소</Btn>
-              <Btn size="sm" kind="solid" icon={Check} disabled={!v.name.trim()}
-                onClick={() => onSave({ ...v, name: v.name.trim() })}>저장</Btn>
+              <Btn size="sm" kind="solid" icon={Check}
+                disabled={!v.name.trim() && !v.org.trim() && !v.phone.trim()}
+                onClick={() => onSave({ ...v, name: v.name.trim(), org: v.org.trim() })}>저장</Btn>
             </div>
           </div>
         </div>
@@ -2319,7 +2676,7 @@ function ContactsView({ data, onSave, onDelete }) {
     .filter((c) => (filter === "all" ? true : filter === "none" ? !c.pid : c.pid === filter))
     .filter((c) => !key || [c.name, c.org, c.role, c.phone, c.email, c.memo]
       .some((x) => String(x || "").toLowerCase().includes(key)))
-    .sort((a, b) => a.name.localeCompare(b.name, "ko"));
+    .sort((a, b) => (a.org || a.name || "").localeCompare(b.org || b.name || "", "ko"));
 
   const chip = (id, label, color, n) => {
     const on = filter === id;
@@ -2372,15 +2729,23 @@ function ContactsView({ data, onSave, onDelete }) {
                   <span className="flex items-center justify-center rounded-full shrink-0"
                     style={{ width: 30, height: 30, background: nfo ? nfo.color : "#F1F3F0",
                       color: nfo ? "#fff" : C.muted, fontSize: 12.5, fontWeight: 800 }}>
-                    {(c.org || c.name).slice(0, 1)}
+                    {(c.org || c.name || "·").slice(0, 1)}
                   </span>
                   <span className="flex-1 min-w-0">
-                    <span className="block truncate" style={{ fontSize: 14, fontWeight: 700 }}>
-                      {c.org || c.name}
+                    <span className="flex items-baseline gap-2 min-w-0">
+                      <span className="truncate" style={{ fontSize: 14, fontWeight: 700 }}>
+                        {c.org || c.name || "이름 없음"}
+                      </span>
+                      {c.phone && (
+                        <span className="shrink-0" style={{ fontSize: 13.5, fontWeight: 700, color: C.muted,
+                          fontVariantNumeric: "tabular-nums" }}>{c.phone}</span>
+                      )}
                     </span>
-                    <span className="block truncate" style={{ fontSize: 11.5, color: C.muted, marginTop: 1 }}>
-                      {[c.org ? c.name : "", c.role, c.phone].filter(Boolean).join(" · ")}
-                    </span>
+                    {(c.org ? c.name : "") || c.role ? (
+                      <span className="block truncate" style={{ fontSize: 11.5, color: C.faint, marginTop: 1 }}>
+                        {[c.org ? c.name : "", c.role].filter(Boolean).join(" · ")}
+                      </span>
+                    ) : null}
                   </span>
                   {nfo && (
                     <span className="shrink-0 rounded" style={{ fontSize: 9.5, fontWeight: 750, padding: "2px 6px",
@@ -2476,197 +2841,6 @@ const ageOf = (birth) => {
   if (m < 0 || (m === 0 && now.getDate() < b.getDate())) a--;
   return a + "세";
 };
-
-/* ── 내담자 등록 ── */
-function ClientSheet({ init, onSave, onDelete, onClose }) {
-  const dismiss = useDismiss(onClose);
-  const [v, setV] = useState({ name: "", phone: "", birth: "", sex: "", issue: "", ...(init || {}) });
-  const inp = { padding: "9px 11px", fontSize: 13.5, border: "1px solid " + C.rule, background: C.surface,
-    outline: "none", color: C.ink, borderRadius: 8, width: "100%", fontFamily: FONT };
-
-  return (
-    <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade"
-      style={{ background: "rgba(26,33,30,0.4)", zIndex: 60 }} {...dismiss}>
-      <div className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
-        style={{ maxWidth: 440, background: C.bg, border: "1px solid " + C.rule, maxHeight: "88vh", overflowY: "auto" }}>
-        <div className="flex items-center justify-between" style={{ padding: "14px 16px 8px" }}>
-          <Label>{init && init.id ? "내담자 정보" : "내담자 등록"}</Label>
-          <button onClick={onClose} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>
-            <X size={19} />
-          </button>
-        </div>
-
-        <div style={{ padding: "0 16px 16px" }}>
-          <div className="rounded-lg" style={{ background: "#F1F3F0", padding: "8px 10px", marginBottom: 12 }}>
-            <span style={{ fontSize: 11, color: C.faint, fontWeight: 700 }}>상담기관 </span>
-            <span style={{ fontSize: 12.5, color: C.ink, fontWeight: 650 }}>{ORG}</span>
-          </div>
-
-          <Label>이름</Label>
-          <input value={v.name} autoFocus onChange={(e) => setV({ ...v, name: e.target.value })}
-            placeholder="내담자 이름" style={{ ...inp, marginTop: 5, marginBottom: 10 }} />
-
-          <div className="flex gap-2" style={{ marginBottom: 10 }}>
-            <div className="flex-1 min-w-0">
-              <Label>생년월일</Label>
-              <input type="date" value={v.birth} onChange={(e) => setV({ ...v, birth: e.target.value })}
-                style={{ ...inp, marginTop: 5 }} />
-            </div>
-            <div style={{ width: 118 }}>
-              <Label>성별</Label>
-              <div className="flex rounded-lg" style={{ background: "#F1F3F0", padding: 3, gap: 3, marginTop: 5 }}>
-                {["남", "여"].map((g) => {
-                  const on = v.sex === g;
-                  return (
-                    <button key={g} onClick={() => setV({ ...v, sex: on ? "" : g })} className="wb-btn flex-1 rounded-md"
-                      style={{ padding: "6px 0", fontSize: 13, fontWeight: 700, cursor: "pointer",
-                        background: on ? C.surface : "transparent", color: on ? C.ink : C.faint,
-                        border: "1px solid " + (on ? C.rule : "transparent") }}>{g}</button>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-
-          <Label>연락처</Label>
-          <input value={v.phone} onChange={(e) => setV({ ...v, phone: fmtPhone(e.target.value) })}
-            placeholder="숫자만 넣으면 됩니다" inputMode="tel" style={{ ...inp, marginTop: 5, marginBottom: 10 }} />
-
-          <Label>주호소 문제</Label>
-          <textarea value={v.issue} onChange={(e) => setV({ ...v, issue: e.target.value.slice(0, 200) })}
-            rows={3} placeholder="주호소 문제를 적어 두세요"
-            style={{ ...inp, marginTop: 5, resize: "vertical", lineHeight: 1.55 }} />
-          <div style={{ fontSize: 10.5, color: C.faint, textAlign: "right", marginTop: 3 }}>{(v.issue || "").length} / 200</div>
-
-          <div className="flex items-center gap-2 mt-4">
-            {init && init.id && onDelete && <DeleteBtn onDelete={onDelete} label="삭제" />}
-            <div className="flex items-center gap-2" style={{ marginLeft: "auto" }}>
-              <Btn size="sm" onClick={onClose}>취소</Btn>
-              <Btn size="sm" kind="solid" icon={Check} disabled={!v.name.trim()}
-                onClick={() => onSave({ ...v, name: v.name.trim() })}>저장</Btn>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ── 상담 예약 ── */
-function ResvSheet({ init, clients, types, onAddType, onSave, onDelete, onClose }) {
-  const dismiss = useDismiss(onClose);
-  const [v, setV] = useState({ clientId: "", type: types[0] || "", date: todayISO(),
-    start: "15:00", end: "16:00", memo: "", ...(init || {}) });
-  const [newType, setNewType] = useState("");
-  const [adding, setAdding] = useState(false);
-  const inp = { padding: "9px 11px", fontSize: 13.5, border: "1px solid " + C.rule, background: C.surface,
-    outline: "none", color: C.ink, borderRadius: 8, fontFamily: FONT };
-
-  return (
-    <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade"
-      style={{ background: "rgba(26,33,30,0.4)", zIndex: 60 }} {...dismiss}>
-      <div className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
-        style={{ maxWidth: 440, background: C.bg, border: "1px solid " + C.rule, maxHeight: "88vh", overflowY: "auto" }}>
-        <div className="flex items-center justify-between" style={{ padding: "14px 16px 8px" }}>
-          <Label>{init && init.id ? "예약 고치기" : "상담 예약"}</Label>
-          <button onClick={onClose} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>
-            <X size={19} />
-          </button>
-        </div>
-
-        <div style={{ padding: "0 16px 16px" }}>
-          <div className="rounded-lg" style={{ background: "#F1F3F0", padding: "8px 10px", marginBottom: 12 }}>
-            <span style={{ fontSize: 11, color: C.faint, fontWeight: 700 }}>상담기관 </span>
-            <span style={{ fontSize: 12.5, color: C.ink, fontWeight: 650 }}>{ORG}</span>
-          </div>
-
-          <Label>내담자</Label>
-          {init && init.clientId && init.lockClient ? (
-            <div className="rounded-lg" style={{ background: C.surface, border: "1px solid " + C.rule,
-              padding: "9px 11px", marginTop: 5, fontSize: 13.5, fontWeight: 650 }}>
-              {(clients.find((c) => c.id === init.clientId) || {}).name}
-            </div>
-          ) : (
-            <div className="flex items-center gap-1.5 flex-wrap" style={{ marginTop: 5 }}>
-              {clients.length === 0 && <span style={{ fontSize: 12, color: C.faint }}>먼저 내담자를 등록해 주세요</span>}
-              {clients.map((c) => {
-                const on = v.clientId === c.id;
-                return (
-                  <button key={c.id} onClick={() => setV({ ...v, clientId: c.id })} className="wb-btn rounded-full"
-                    style={{ fontSize: 12, fontWeight: 700, padding: "5px 11px", cursor: "pointer",
-                      background: on ? C.navy : C.surface, color: on ? "#fff" : C.muted,
-                      border: "1px solid " + (on ? C.navy : C.rule) }}>{c.name}</button>
-                );
-              })}
-            </div>
-          )}
-
-          <div style={{ marginTop: 12 }}>
-            <Label>유형</Label>
-            <div className="flex items-center gap-1.5 flex-wrap" style={{ marginTop: 5 }}>
-              {types.map((t) => {
-                const on = v.type === t;
-                return (
-                  <button key={t} onClick={() => setV({ ...v, type: t })} className="wb-btn rounded-full"
-                    style={{ fontSize: 12, fontWeight: 700, padding: "5px 11px", cursor: "pointer",
-                      background: on ? C.green : C.surface, color: on ? "#fff" : C.muted,
-                      border: "1px solid " + (on ? C.green : C.rule) }}>{t}</button>
-                );
-              })}
-              {adding ? (
-                <span className="inline-flex items-center gap-1">
-                  <input value={newType} autoFocus onChange={(e) => setNewType(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && newType.trim()) { onAddType(newType.trim()); setV({ ...v, type: newType.trim() }); setNewType(""); setAdding(false); }
-                      if (e.key === "Escape") { setNewType(""); setAdding(false); }
-                    }}
-                    placeholder="새 유형" style={{ ...inp, padding: "4px 9px", fontSize: 12, width: 96 }} />
-                </span>
-              ) : (
-                <button onClick={() => setAdding(true)} className="wb-btn inline-flex items-center gap-1 rounded-full"
-                  style={{ fontSize: 12, fontWeight: 700, padding: "5px 10px", cursor: "pointer",
-                    background: "transparent", color: C.faint, border: "1px dashed #C9CFC7" }}>
-                  <Plus size={12} strokeWidth={2.6} /> 유형 추가
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div style={{ marginTop: 12 }}>
-            <Label>시작</Label>
-            <div className="flex items-center gap-2" style={{ marginTop: 5 }}>
-              <input type="date" value={v.date} onChange={(e) => setV({ ...v, date: e.target.value })} style={{ ...inp, flex: 1 }} />
-              <TimePick value={v.start} onChange={(t) => setV({ ...v, start: t })} style={{ width: 118 }} />
-            </div>
-          </div>
-          <div style={{ marginTop: 8 }}>
-            <Label>종료</Label>
-            <div className="flex items-center gap-2" style={{ marginTop: 5 }}>
-              <input type="date" value={v.date} disabled style={{ ...inp, flex: 1, background: "#F1F3F0", color: C.faint }} />
-              <TimePick value={v.end} onChange={(t) => setV({ ...v, end: t })} style={{ width: 118 }} />
-            </div>
-          </div>
-
-          <div style={{ marginTop: 12 }}>
-            <Label>예약 메모</Label>
-            <textarea value={v.memo} onChange={(e) => setV({ ...v, memo: e.target.value })} rows={2}
-              placeholder="예약에 대한 메모를 적어 두세요"
-              style={{ ...inp, width: "100%", marginTop: 5, resize: "vertical", lineHeight: 1.55 }} />
-          </div>
-
-          <div className="flex items-center gap-2 mt-4">
-            {init && init.id && onDelete && <DeleteBtn onDelete={onDelete} label="삭제" />}
-            <div className="flex items-center gap-2" style={{ marginLeft: "auto" }}>
-              <Btn size="sm" onClick={onClose}>취소</Btn>
-              <Btn size="sm" kind="solid" icon={Check} disabled={!v.clientId}
-                onClick={() => onSave(v)}>등록하기</Btn>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 /* ── 상담일지 ── */
 function LogSheet({ resv, client, session, onSave, onClose }) {
@@ -2770,237 +2944,29 @@ function LogSheet({ resv, client, session, onSave, onClose }) {
   );
 }
 
-/* ── 상담 화면 ── */
-function CounselView({ data, onSaveClient, onDeleteClient, onSaveResv, onDeleteResv, onAddType, onSaveLog }) {
-  const [openClient, setOpenClient] = useState(null);
-  const [clientSheet, setClientSheet] = useState(null);
-  const [resvSheet, setResvSheet] = useState(null);
-  const [logFor, setLogFor] = useState(null);
-  const [showPast, setShowPast] = useState(false);
-
-  const clients = data.clients || [];
-  const resv = data.resv || [];
-  const types = data.resvTypes && data.resvTypes.length ? data.resvTypes : DEFAULT_TYPES;
-
-  const sessionsOf = (cid) => resv.filter((r) => r.clientId === cid)
-    .sort((a, b) => (a.date + (a.start || "")).localeCompare(b.date + (b.start || "")));
-  const seqOf = (r) => sessionsOf(r.clientId).findIndex((x) => x.id === r.id) + 1;
-
-  const upcoming = resv.filter((r) => r.date >= todayISO())
-    .sort((a, b) => (a.date + (a.start || "")).localeCompare(b.date + (b.start || "")));
-  const past = resv.filter((r) => r.date < todayISO())
-    .sort((a, b) => (b.date + (b.start || "")).localeCompare(a.date + (a.start || "")));
-
-  const nameOf = (cid) => (clients.find((c) => c.id === cid) || {}).name || "(삭제된 내담자)";
-
-  const ResvRow = ({ r, showName }) => (
-    <div className="flex items-start gap-2" style={{ padding: "8px 0", borderTop: "1px solid " + C.rule }}>
-      <span className="shrink-0 flex items-center justify-center rounded"
-        style={{ minWidth: 28, height: 20, background: C.greenSoft, color: C.green,
-          fontSize: 10.5, fontWeight: 800, marginTop: 1 }}>
-        {seqOf(r)}회
-      </span>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5">
-          {showName && <span style={{ fontSize: 13, fontWeight: 700 }}>{nameOf(r.clientId)}</span>}
-          <span className="rounded" style={{ fontSize: 9.5, fontWeight: 750, padding: "1px 5px",
-            background: "#F1F3F0", color: C.muted }}>{r.type}</span>
-          {r.log && (r.log.text || (r.log.files || []).length) && (
-            <span className="rounded" style={{ fontSize: 9.5, fontWeight: 750, padding: "1px 5px",
-              background: C.navySoft, color: C.navy }}>일지</span>
-          )}
-        </div>
-        <div style={{ fontSize: 11.5, color: C.muted, marginTop: 2, fontVariantNumeric: "tabular-nums" }}>
-          {fmtDateK(r.date)} {r.start}{r.end ? "–" + r.end : ""}
-        </div>
-        {r.memo && <div className="truncate" style={{ fontSize: 11, color: C.faint, marginTop: 2 }}>{r.memo}</div>}
-      </div>
-      <button onClick={() => setLogFor(r)} className="wb-btn shrink-0 rounded-lg"
-        style={{ background: "#F1F3F0", border: "none", color: C.muted, fontSize: 11,
-          fontWeight: 700, padding: "4px 9px", cursor: "pointer" }}>
-        상담일지
-      </button>
-      <button onClick={() => setResvSheet({ ...r, lockClient: true })} className="wb-btn shrink-0"
-        style={{ background: "none", border: "none", color: C.faint, cursor: "pointer", padding: "2px 3px" }}>
-        <Pencil size={13} />
-      </button>
-    </div>
-  );
-
-  /* 내담자 상세 */
-  if (openClient) {
-    const c = clients.find((x) => x.id === openClient);
-    if (!c) { setOpenClient(null); return null; }
-    const list = sessionsOf(c.id);
-    return (
-      <div className="flex flex-col gap-3">
-        <button onClick={() => setOpenClient(null)} className="wb-btn inline-flex items-center gap-1"
-          style={{ background: "none", border: "none", color: C.muted, fontSize: 12.5, fontWeight: 650, cursor: "pointer", padding: 0 }}>
-          <ChevronLeft size={15} /> 내담자 목록
-        </button>
-
-        <Card style={{ padding: 15 }}>
-          <div className="flex items-start gap-2">
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span style={{ fontSize: 18, fontWeight: 780, letterSpacing: "-0.02em" }}>{c.name}</span>
-                {c.sex && <Chip tone="neutral">{c.sex}</Chip>}
-                {c.birth && <Chip tone="neutral">{ageOf(c.birth)}</Chip>}
-              </div>
-              <div style={{ fontSize: 12, color: C.muted, marginTop: 5, lineHeight: 1.6 }}>
-                {c.birth && <div>생년월일 {c.birth}</div>}
-                {c.phone && <div>연락처 {c.phone}</div>}
-                <div>상담기관 {ORG}</div>
-              </div>
-            </div>
-            <button onClick={() => setClientSheet(c)} className="wb-btn shrink-0"
-              style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 3 }}>
-              <Pencil size={15} />
-            </button>
-          </div>
-          {c.issue && (
-            <div className="rounded-lg" style={{ background: "#F7F8F6", border: "1px solid " + C.rule,
-              padding: "9px 11px", marginTop: 11 }}>
-              <Label>주호소 문제</Label>
-              <div style={{ fontSize: 12.5, lineHeight: 1.6, color: C.ink, marginTop: 4, whiteSpace: "pre-wrap" }}>{c.issue}</div>
-            </div>
-          )}
-        </Card>
-
-        <Card style={{ padding: "13px 14px" }}>
-          <div className="flex items-center gap-2 mb-1">
-            <Label>상담 회기 {list.length}</Label>
-            <button onClick={() => setResvSheet({ clientId: c.id, lockClient: true })}
-              className="wb-btn inline-flex items-center gap-1 rounded-lg"
-              style={{ marginLeft: "auto", background: C.navy, border: "none", color: "#fff",
-                fontSize: 11.5, fontWeight: 700, padding: "5px 10px", cursor: "pointer" }}>
-              <Plus size={12} strokeWidth={2.6} /> 상담 예약
-            </button>
-          </div>
-          {list.length === 0 ? (
-            <div style={{ fontSize: 12.5, color: C.faint, padding: "10px 0" }}>아직 예약된 회기가 없습니다</div>
-          ) : list.map((r) => <ResvRow key={r.id} r={r} />)}
-        </Card>
-
-        {clientSheet && (
-          <ClientSheet init={clientSheet} onClose={() => setClientSheet(null)}
-            onDelete={() => { onDeleteClient(clientSheet.id); setClientSheet(null); setOpenClient(null); }}
-            onSave={(v) => { onSaveClient(v); setClientSheet(null); }} />
-        )}
-        {resvSheet && (
-          <ResvSheet init={resvSheet} clients={clients} types={types} onAddType={onAddType}
-            onClose={() => setResvSheet(null)}
-            onDelete={resvSheet.id ? () => { onDeleteResv(resvSheet.id); setResvSheet(null); } : null}
-            onSave={(v) => { onSaveResv(v); setResvSheet(null); }} />
-        )}
-        {logFor && (
-          <LogSheet resv={logFor} client={c} session={seqOf(logFor)}
-            onClose={() => setLogFor(null)}
-            onSave={(log) => { onSaveLog(logFor.id, log); setLogFor(null); }} />
-        )}
-      </div>
-    );
-  }
-
-  /* 목록 */
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-2">
-        <Btn kind="solid" size="sm" icon={Plus} onClick={() => setClientSheet({})}>내담자 등록</Btn>
-        <Btn size="sm" icon={CalendarDays} onClick={() => setResvSheet({})}>상담 예약</Btn>
-      </div>
-
-      <Card style={{ padding: "13px 14px" }}>
-        <div className="flex items-center gap-2 mb-1">
-          <Users size={14} color={C.navy} strokeWidth={2.3} />
-          <Label>내담자 {clients.length}</Label>
-        </div>
-        {clients.length === 0 ? (
-          <div style={{ fontSize: 12.5, color: C.faint, padding: "10px 0" }}>등록된 내담자가 없습니다</div>
-        ) : clients.map((c) => {
-          const n = sessionsOf(c.id).length;
-          return (
-            <button key={c.id} onClick={() => setOpenClient(c.id)}
-              className="wb-btn w-full flex items-center gap-2 text-left"
-              style={{ background: "none", border: "none", borderTop: "1px solid " + C.rule,
-                padding: "9px 0", cursor: "pointer" }}>
-              <span className="flex items-center justify-center rounded-full shrink-0"
-                style={{ width: 28, height: 28, background: C.navySoft, color: C.navy, fontSize: 12, fontWeight: 800 }}>
-                {c.name.slice(0, 1)}
-              </span>
-              <span className="flex-1 min-w-0">
-                <span className="flex items-center gap-1.5">
-                  <span style={{ fontSize: 13.5, fontWeight: 700 }}>{c.name}</span>
-                  {c.sex && <span style={{ fontSize: 10.5, color: C.faint }}>({c.sex})</span>}
-                  {c.birth && <span style={{ fontSize: 10.5, color: C.faint }}>{ageOf(c.birth)}</span>}
-                </span>
-                {c.issue && <span className="block truncate" style={{ fontSize: 11, color: C.faint, marginTop: 1 }}>{c.issue}</span>}
-              </span>
-              <span className="shrink-0 rounded" style={{ fontSize: 10.5, fontWeight: 750, padding: "2px 7px",
-                background: n ? C.greenSoft : "#F1F3F0", color: n ? C.green : C.faint }}>
-                {n}회기
-              </span>
-              <ChevronRight size={14} color={C.faint} className="shrink-0" />
-            </button>
-          );
-        })}
-      </Card>
-
-      <Card style={{ padding: "13px 14px" }}>
-        <div className="flex items-center gap-2 mb-1">
-          <CalendarDays size={14} color={C.navy} strokeWidth={2.3} />
-          <Label>다가오는 상담 {upcoming.length}</Label>
-        </div>
-        {upcoming.length === 0 ? (
-          <div style={{ fontSize: 12.5, color: C.faint, padding: "10px 0" }}>예정된 상담이 없습니다</div>
-        ) : upcoming.map((r) => <ResvRow key={r.id} r={r} showName />)}
-      </Card>
-
-      {past.length > 0 && (
-        <Card style={{ padding: "11px 14px" }}>
-          <button onClick={() => setShowPast(!showPast)} className="wb-btn w-full flex items-center gap-2"
-            style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}>
-            <Label>지난 상담 {past.length}</Label>
-            <ChevronRight size={14} color={C.faint} style={{ marginLeft: "auto",
-              transform: showPast ? "rotate(90deg)" : "none", transition: "transform .15s ease" }} />
-          </button>
-          {showPast && <div style={{ marginTop: 4 }}>{past.map((r) => <ResvRow key={r.id} r={r} showName />)}</div>}
-        </Card>
-      )}
-
-      {clientSheet && (
-        <ClientSheet init={clientSheet} onClose={() => setClientSheet(null)}
-          onDelete={clientSheet.id ? () => { onDeleteClient(clientSheet.id); setClientSheet(null); } : null}
-          onSave={(v) => { onSaveClient(v); setClientSheet(null); }} />
-      )}
-      {resvSheet && (
-        <ResvSheet init={resvSheet} clients={clients} types={types} onAddType={onAddType}
-          onClose={() => setResvSheet(null)}
-          onDelete={resvSheet.id ? () => { onDeleteResv(resvSheet.id); setResvSheet(null); } : null}
-          onSave={(v) => { onSaveResv(v); setResvSheet(null); }} />
-      )}
-      {logFor && (
-        <LogSheet resv={logFor} client={clients.find((c) => c.id === logFor.clientId)} session={seqOf(logFor)}
-          onClose={() => setLogFor(null)}
-          onSave={(log) => { onSaveLog(logFor.id, log); setLogFor(null); }} />
-      )}
-    </div>
-  );
-}
-
 /* ------------------------------------------------------------------
    일정 — 월 · 주 · 일 보기, 끌어서 시간 맞추기
 ------------------------------------------------------------------- */
 const HOUR_H = 46;          /* 한 시간의 높이(px) */
 const DAY_FROM = 7, DAY_TO = 21;
 const CENTER = "__center__";
-const CENTER_COLOR = "#5A6673";   /* 사업 색과 겹치지 않는 회청색 */
+const CENTER_COLOR = "#1E6C86";   /* 청록빛 파랑 — 사업 색·회색과 겹치지 않습니다 */
+const EDU = "__edu__";
+const EDU_COLOR = "#8E2F52";      /* 보수교육 — 자주빛 */
 
 const toMin = (t) => (t ? Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5)) : null);
 const toHM = (m) => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
 const snap = (m) => Math.max(0, Math.min(24 * 60 - 10, Math.round(m / 10) * 10));
 
 /* 일정 만들기 · 고치기 */
+/* 시트 안의 한 줄 — 컴포넌트 밖에 두어야 글자를 칠 때 입력칸이 초기화되지 않습니다 */
+const SheetRow = ({ icon: Icon, children }) => (
+  <div className="flex items-start gap-2.5" style={{ padding: "9px 0", borderTop: "1px solid " + C.rule }}>
+    <Icon size={15} color={C.faint} strokeWidth={2.2} style={{ marginTop: 3, flexShrink: 0 }} />
+    <div className="flex-1 min-w-0">{children}</div>
+  </div>
+);
+
 function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
   const dismiss = useDismiss(onClose);
   const [kind, setKind] = useState(init.kind || "event");
@@ -3017,12 +2983,6 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
   const proj = projects.find((p) => p.id === pid);
   const subs = proj ? liveSubs(proj) : [];
 
-  const Field = ({ icon: Icon, children }) => (
-    <div className="flex items-start gap-2.5" style={{ padding: "9px 0", borderTop: "1px solid " + C.rule }}>
-      <Icon size={15} color={C.faint} strokeWidth={2.2} style={{ marginTop: 3, flexShrink: 0 }} />
-      <div className="flex-1 min-w-0">{children}</div>
-    </div>
-  );
   const inp = { padding: "7px 9px", fontSize: 13.5, border: "1px solid " + C.rule, background: C.surface,
     outline: "none", color: C.ink, borderRadius: 8, minWidth: 0, fontFamily: FONT };
 
@@ -3069,8 +3029,8 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
           )}
 
 
-          <Field icon={Clock}>
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full" style={inp} />
+          <SheetRow icon={Clock}>
+            <DatePick value={date} onChange={setDate} style={{ width: "100%" }} />
             <label className="flex items-center gap-1.5 mt-2" style={{ fontSize: 12.5, color: C.muted, cursor: "pointer" }}>
               <input type="checkbox" checked={noTime} onChange={(e) => setNoTime(e.target.checked)} />
               시간 미정
@@ -3082,16 +3042,22 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
                 <TimePick value={end} onChange={setEnd} style={{ flex: 1 }} />
               </div>
             )}
-          </Field>
+          </SheetRow>
 
           {kind !== "counsel" && (
-          <Field icon={FolderClosed}>
+          <SheetRow icon={FolderClosed}>
             <div className="flex items-center gap-1.5 flex-wrap">
               <button onClick={() => { setPid(""); setSid(""); }} className="wb-btn rounded-full"
                 style={{ fontSize: 11.5, fontWeight: 700, padding: "4px 10px", cursor: "pointer",
-                  background: !pid ? C.navy : C.surface, color: !pid ? "#fff" : C.muted,
-                  border: "1px solid " + (!pid ? C.navy : C.rule) }}>
+                  background: !pid ? CENTER_COLOR : C.surface, color: !pid ? "#fff" : C.muted,
+                  border: "1px solid " + (!pid ? CENTER_COLOR : C.rule) }}>
                 센터 일정
+              </button>
+              <button onClick={() => { setPid(EDU); setSid(""); }} className="wb-btn rounded-full"
+                style={{ fontSize: 11.5, fontWeight: 700, padding: "4px 10px", cursor: "pointer",
+                  background: pid === EDU ? EDU_COLOR : C.surface, color: pid === EDU ? "#fff" : C.muted,
+                  border: "1px solid " + (pid === EDU ? EDU_COLOR : C.rule) }}>
+                보수교육
               </button>
               {projects.map((p, i) => {
                 const c = colorOf(p, i), on = pid === p.id;
@@ -3126,25 +3092,25 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
                 </div>
               </div>
             )}
-          </Field>
+          </SheetRow>
           )}
 
           {kind === "counsel" && init.memo && (
-            <Field icon={AlignLeft}>
+            <SheetRow icon={AlignLeft}>
               <div style={{ fontSize: 13, lineHeight: 1.6, color: C.ink, whiteSpace: "pre-wrap" }}>{init.memo}</div>
-            </Field>
+            </SheetRow>
           )}
 
           {kind === "event" && (
             <>
-              <Field icon={MapPin}>
+              <SheetRow icon={MapPin}>
                 <input value={place} onChange={(e) => setPlace(e.target.value)} placeholder="위치 추가"
                   className="w-full" style={{ ...inp, border: "none", background: "transparent", padding: "3px 0" }} />
-              </Field>
-              <Field icon={AlignLeft}>
+              </SheetRow>
+              <SheetRow icon={AlignLeft}>
                 <textarea value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="설명 추가" rows={2}
                   className="w-full" style={{ ...inp, border: "none", background: "transparent", padding: "3px 0", resize: "none" }} />
-              </Field>
+              </SheetRow>
             </>
           )}
 
@@ -3199,28 +3165,31 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
 
   /* 할 일과 일정을 한 줄기로 */
   const projIdx = (pid) => data.projects.findIndex((p) => p.id === pid);
-  const colorFor = (pid) => (pid ? colorOf(data.projects[projIdx(pid)] || {}, Math.max(0, projIdx(pid))) : CENTER_COLOR);
-  const nameFor = (pid) => (pid ? shortName((data.projects[projIdx(pid)] || {}).name) : "센터");
+  const colorFor = (pid) => (pid === EDU ? EDU_COLOR : pid ? colorOf(data.projects[projIdx(pid)] || {}, Math.max(0, projIdx(pid))) : CENTER_COLOR);
+  const nameFor = (pid) => (pid === EDU ? "보수교육" : pid ? shortName((data.projects[projIdx(pid)] || {}).name) : "센터");
 
   const all = [
     ...rows.map((r) => ({
       id: r.id, kind: "todo", title: r.text, date: r.due, start: r.dueTime || "", end: r.dueEnd || "",
-      pid: r.pid, sid: r.sid, sName: r.sName, color: r.pColor, hl: r.hl,
+      pid: r.pid, sid: r.sid, sName: r.sName, color: r.pColor, hl: r.hl, done: !!r.done,
     })),
     ...(events || []).map((e) => ({
       id: e.id, kind: "event", title: e.title, date: e.date, start: e.start || "", end: e.end || "",
-      pid: e.pid || "", sid: "", place: e.place, memo: e.memo,
+      pid: e.pid || "", sid: "", place: e.place, memo: e.memo, done: !!e.done,
       color: colorFor(e.pid || ""), hl: "",
     })),
-    ...(data.resv || []).map((r) => {
+    ...(data.resv || []).filter((r) => !["cancelled", "noshow"].includes(reservationStatus(r))).map((r) => {
       const c = (data.clients || []).find((x) => x.id === r.clientId);
-      return { id: r.id, kind: "counsel", title: (c ? c.name : "상담") + " · " + r.type,
+      return { id: r.id, kind: "counsel", title: (externalReservation(r) ? "구글 · " : "") + (c ? c.name : externalReservation(r) ? externalReservationTitle(r) : "상담") + " · " + r.type,
         date: r.date, start: r.start || "", end: r.end || "", pid: "", sid: "",
-        place: "", memo: r.memo, clientId: r.clientId, rtype: r.type, color: C.green, hl: C.greenSoft };
+        readOnly: externalReservation(r), endDate: r.endDate, allDay: r.allDay,
+        place: r.place || "", memo: r.memo, clientId: r.clientId, rtype: r.type, done: reservationStatus(r) === "done",
+        color: C.green, hl: C.greenSoft };
     }),
-  ].filter((x) => x.date && !hidden.includes(x.pid || CENTER));
+  ].filter((x) => x.date && !hidden.includes(x.pid === EDU ? EDU : (x.pid || CENTER)));
 
-  const onDay = (iso) => all.filter((x) => x.date === iso);
+  const onDay = (iso) => all.filter((x) => x.date === iso || (x.readOnly && x.date < iso && x.endDate && (iso < x.endDate || (iso === x.endDate && !x.allDay && x.end && x.end !== "00:00"))))
+    .map((x) => !x.readOnly || x.allDay ? x : { ...x, date: iso, start: x.date < iso ? "00:00" : x.start, end: x.endDate > iso ? "23:59" : x.end });
   const timed = (iso) => onDay(iso).filter((x) => x.start).sort((a, b) => a.start.localeCompare(b.start));
   const untimed = (iso) => onDay(iso).filter((x) => !x.start);
 
@@ -3230,12 +3199,20 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
 
   /* 날짜와 시각을 함께 옮깁니다 */
   const moveTo = (x, date, start, end) => {
+    if (x.readOnly) return;
     if (x.kind === "todo") onSetTodoTime(x.pid, x.sid, x.id, { due: date, dueTime: start, dueEnd: end });
     else if (x.kind === "counsel") onSaveResv({ id: x.id, date, start, end });
     else onSaveEvent({ ...x, date, start, end });
   };
 
+  const onToggleDone = (x) => {
+    if (x.kind === "todo") onSetTodoTime(x.pid, x.sid, x.id, { done: !x.done });
+    else if (x.kind === "counsel") onSaveResv({ id: x.id, done: !x.done });
+    else onSaveEvent({ ...x, done: !x.done });
+  };
+
   const applyTime = (x, start, end) => {
+    if (x.readOnly) return;
     if (x.kind === "todo") onSetTodoTime(x.pid, x.sid, x.id, { dueTime: start, dueEnd: end });
     else if (x.kind === "counsel") onSaveResv({ id: x.id, start, end });
     else onSaveEvent({ ...x, start, end });
@@ -3310,6 +3287,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
 
   /* 가장자리를 끌어 시각 조절 (위 = 시작, 아래 = 끝) */
   const beginResize = (e, x, col, edge) => {
+    if (x.readOnly) return;
     e.preventDefault(); e.stopPropagation();
     if (!col) return;
     movedRef.current = false;
@@ -3321,6 +3299,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
 
   /* 블록 몸통 — 통째로 옮기기 */
   const beginMove = (e, x, col) => {
+    if (x.readOnly) { movedRef.current = false; return; }
     if (e.button != null && e.button !== 0) return;
     if (!col) return;
     movedRef.current = false;
@@ -3357,8 +3336,8 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
         }}
         style={{
           position: "absolute", left: 2, right: 3, top: topOf(showStart), height: heightOf(showStart, showEnd),
-          background: x.hl || (x.kind === "event" ? "#EEF1F5" : C.navySoft),
-          borderLeft: "3px solid " + x.color, overflow: "hidden",
+          background: x.done ? "#F1F3F0" : (x.hl || (x.kind === "event" ? "#EAF1F4" : C.navySoft)),
+          borderLeft: "3px solid " + (x.done ? "#C6CCC5" : x.color), overflow: "hidden",
           cursor: moving ? "grabbing" : "pointer", touchAction: "none",
           opacity: moving ? 0.85 : 1,
           boxShadow: moving ? "0 6px 16px rgba(26,33,30,0.18)" : "0 1px 2px rgba(26,33,30,0.06)",
@@ -3381,19 +3360,32 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
                 title="해당 화면으로 이동"
                 className="wb-btn shrink-0 rounded" style={{ fontSize: 8.5, fontWeight: 800, padding: "2px 5px",
                   border: "none", cursor: "pointer",
-                  background: x.kind === "counsel" ? C.greenSoft : x.kind === "event" ? "rgba(36,72,107,0.12)" : "rgba(26,33,30,0.07)",
-                  color: x.kind === "counsel" ? C.green : C.muted }}>
-                {x.kind === "event" ? "일정" : x.kind === "counsel" ? "상담" : "업무"}
+                  background: x.pid === EDU ? "rgba(142,47,82,0.12)" : x.kind === "counsel" ? C.greenSoft
+                    : x.kind === "event" ? "rgba(30,108,134,0.12)" : "rgba(26,33,30,0.07)",
+                  color: x.pid === EDU ? EDU_COLOR : x.kind === "counsel" ? C.green : C.muted }}>
+                {x.pid === EDU ? "교육" : x.kind === "event" ? "일정" : x.kind === "counsel" ? "상담" : "업무"}
               </button>
             )}
-            <span className="truncate" style={{ fontSize: compact ? 9.5 : 12, fontWeight: 650, color: C.ink }}>{x.title}</span>
+            <span className="truncate" style={{ fontSize: compact ? 9.5 : 12, fontWeight: 650,
+              color: x.done ? C.faint : C.ink, textDecoration: x.done ? "line-through" : "none" }}>{x.title}</span>
           </div>
 
         </div>
-        <div onPointerDown={(e) => beginResize(e, x, e.currentTarget.closest("[data-daycol]"), "top")}
+        {!compact && (
+          <button onPointerDown={(ev) => ev.stopPropagation()}
+            onClick={(ev) => { ev.stopPropagation(); onToggleDone(x); }}
+            title={x.done ? "완료 해제" : "완료"}
+            className="wb-btn flex items-center justify-center rounded"
+            style={{ position: "absolute", right: 5, top: 5, width: 15, height: 15, zIndex: 3,
+              border: "1.5px solid " + (x.done ? C.green : "#C6CCC5"),
+              background: x.done ? C.green : "rgba(255,255,255,0.7)", color: "#fff", cursor: "pointer" }}>
+            {x.done && <Check size={10} strokeWidth={3.6} />}
+          </button>
+        )}
+        {!x.readOnly && <><div onPointerDown={(e) => beginResize(e, x, e.currentTarget.closest("[data-daycol]"), "top")}
           style={{ position: "absolute", left: 0, right: 0, top: 0, height: 9, cursor: "ns-resize", touchAction: "none" }} />
         <div onPointerDown={(e) => beginResize(e, x, e.currentTarget.closest("[data-daycol]"), "bottom")}
-          style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 9, cursor: "ns-resize", touchAction: "none" }} />
+          style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 9, cursor: "ns-resize", touchAction: "none" }} /></>}
       </div>
     );
   };
@@ -3511,7 +3503,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
       <Card style={{ padding: "10px 12px" }}>
         <Label>표시할 일정</Label>
         <div className="flex items-center gap-1.5 flex-wrap mt-2">
-          {[{ id: CENTER, name: "센터 일정", color: CENTER_COLOR }, ...data.projects.map((p, i) => ({ id: p.id, name: p.name, color: colorOf(p, i) }))]
+          {[{ id: CENTER, name: "센터 일정", color: CENTER_COLOR }, { id: EDU, name: "보수교육", color: EDU_COLOR }, ...data.projects.map((p, i) => ({ id: p.id, name: p.name, color: colorOf(p, i) }))]
             .map((o) => {
               const off = hidden.includes(o.id);
               return (
@@ -3559,7 +3551,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
                       background: isToday ? C.navy : "transparent", color: isToday ? "#fff" : C.ink }}>{c.num}</span>
                   </div>
                   {list.slice(0, 3).map((x) => (
-                    <div key={x.id} draggable
+                    <div key={x.id} draggable={!x.readOnly}
                       onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData("text/plan", x.id); e.dataTransfer.effectAllowed = "move"; }}
                       className="truncate" style={{ fontSize: 8.5, color: C.ink, lineHeight: 1.35,
                         borderLeft: "2px solid " + x.color, paddingLeft: 3, marginTop: 1, cursor: "grab" }}>{x.title}</div>
@@ -3615,7 +3607,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
               <Label>시간 미정 {untimed(pick).length}</Label>
               <div style={{ fontSize: 10, color: C.faint, margin: "3px 0 6px" }}>아래 시간표로 끌어다 놓으면 시각이 정해집니다</div>
               {untimed(pick).map((x) => (
-                <div key={x.id} draggable
+                <div key={x.id} draggable={!x.readOnly}
                   onDragStart={(e) => { e.dataTransfer.setData("text/plan", x.id); e.dataTransfer.effectAllowed = "move"; }}
                   onClick={() => setSheet({ ...x })}
                   className="flex items-center gap-2 rounded-lg"
@@ -3653,18 +3645,19 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
         </>
       )}
 
-      {sheet && (
-        <PlanSheet init={sheet} projects={data.projects}
+      {sheet && (sheet.readOnly
+        ? (data.resv || []).some((r) => r.id === sheet.id) && <GoogleReservationEditor ui={COUNSEL_UI} reservation={(data.resv || []).find((r) => r.id === sheet.id)} clients={data.clients || []} types={data.resvTypes?.length ? data.resvTypes : DEFAULT_TYPES} onSave={onSaveResv} onClose={() => setSheet(null)} />
+        : <PlanSheet init={sheet} projects={data.projects}
           onClose={() => setSheet(null)}
           onGoLink={(x) => { setSheet(null); goLink(x); }}
           onDelete={sheet.id
             ? () => {
                 if (sheet.kind === "event") onDeleteEvent(sheet.id);
-                else if (sheet.kind === "counsel") onDeleteResv(sheet.id);
+                else if (sheet.kind === "counsel") { if (onDeleteResv(sheet.id) === false) return; }
                 else onDeleteTodo(sheet.pid, sheet.sid, sheet.id);
                 setSheet(null);
               } : null}
-          onSave={(v) => { if (v.kind === "counsel") onSaveResv(v); else onSaveEvent(v); setSheet(null); }} />
+          onSave={(v) => { if (v.kind === "counsel" && onSaveResv(v) === false) return; if (v.kind !== "counsel") onSaveEvent(v); setSheet(null); }} />
       )}
     </div>
   );
@@ -3980,6 +3973,8 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
     onTopOrder(next);
   };
 
+  const live = all.filter((r) => bucketOf(r) !== 0);   /* 지난 것은 아래 배너에서 봅니다 */
+
   const moveTop = (id, dir) => {
     const ids = all.map((x) => x.id);
     const i = ids.indexOf(id), j = i + dir;
@@ -4025,16 +4020,16 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
       <Card style={{ padding: "11px 13px" }}>
         <div className="flex items-center gap-1.5 mb-1.5">
           <ListChecks size={14} color={C.navy} strokeWidth={2.3} />
-          <Label>할 일 전체 {all.length}</Label>
+          <Label>할 일 전체 {live.length}</Label>
           {all.length > 1 && <span style={{ fontSize: 10, color: C.faint, marginLeft: "auto" }}>Ctrl+↑↓ 순서</span>}
         </div>
-        {all.length === 0 ? (
+        {live.length === 0 ? (
           <div style={{ fontSize: 12, color: C.faint, padding: "6px 0 2px", lineHeight: 1.5 }}>
             아직 할 일이 없습니다. 아래 폴더에 적으면 여기에 모입니다.
           </div>
         ) : (
           <>
-          <Sortable items={all} idOf={(r) => r.id} onReorder={(next) => onTopOrder(next.map((x) => x.id))}
+          <Sortable items={live} idOf={(r) => r.id} onReorder={(next) => onTopOrder(next.map((x) => x.id))}
             renderRow={(r, handle) => (
               <div className="flex items-start gap-1" style={{ borderTop: "1px solid #F1F3F0" }}>
                 <button {...handle} className="wb-btn shrink-0 flex items-center justify-center"
@@ -4043,7 +4038,7 @@ function ProjectList({ data, onOpen, onOpenSub, onAdd, onReorder, overdue, onGoD
                   <GripVertical size={11} strokeWidth={2} />
                 </button>
                 <div className="flex-1 min-w-0">
-                  <MiniTodo todo={r} no={all.findIndex((x) => x.id === r.id) + 1} noRed={bucketOf(r) === 0}
+                  <MiniTodo todo={r} no={live.findIndex((x) => x.id === r.id) + 1} noRed={bucketOf(r) === 0}
                     dense autoEdit={focusId === r.id}
                     onToggle={() => onToggleTodo(r.pid, r.sid, r.id)}
                     onEdit={(t) => onEditTodo(r.pid, r.sid, r.id, t)}
@@ -4442,7 +4437,7 @@ function SubList({ project, color, notes, onOpen, onAdd, onDelete, onDeleteProje
 /* ------------------------------------------------------------------
    세부사업 상세
 ------------------------------------------------------------------- */
-function SubDetail({ sub, color, onPatch, onToggleDoc, onAddTodo, onPatchTodo, onDeleteTodo, onReorderTodos }) {
+function SubDetail({ sub, color, onPatch, onToggleDoc, onPatchDocSchedule, onAddTodo, onPatchTodo, onDeleteTodo, onReorderTodos }) {
   const st = subStats(sub);
   const open = sub.todos.filter((t) => !t.done);
   const done = sub.todos.filter((t) => t.done);
@@ -4465,11 +4460,9 @@ function SubDetail({ sub, color, onPatch, onToggleDoc, onAddTodo, onPatchTodo, o
             style={{ padding: "10px 12px", fontSize: 15, border: "1px solid " + C.rule, background: "#F7F8F6", outline: "none", color: C.ink }} />
         )}
         <div className="flex items-center gap-2">
-          <input type="date" value={sub.start} onChange={(e) => onPatch({ start: e.target.value })} className="flex-1 rounded-lg"
-            style={{ padding: "9px 11px", fontSize: 13.5, border: "1px solid " + C.rule, background: "#F7F8F6", color: C.ink, minWidth: 0 }} />
+          <DatePick value={sub.start} onChange={(t) => onPatch({ start: t })} style={{ flex: 1 }} />
           <span style={{ color: C.faint }}>–</span>
-          <input type="date" value={sub.end} onChange={(e) => onPatch({ end: e.target.value })} className="flex-1 rounded-lg"
-            style={{ padding: "9px 11px", fontSize: 13.5, border: "1px solid " + C.rule, background: "#F7F8F6", color: C.ink, minWidth: 0 }} />
+          <DatePick value={sub.end} onChange={(t) => onPatch({ end: t })} style={{ flex: 1 }} />
         </div>
         {sub.end && (
           <div className="mt-2.5 flex items-center gap-2">
@@ -4479,7 +4472,7 @@ function SubDetail({ sub, color, onPatch, onToggleDoc, onAddTodo, onPatchTodo, o
         )}
       </Card>
 
-      <DocPanel sub={sub} onToggleDoc={onToggleDoc}
+      <DocPanel sub={sub} onToggleDoc={onToggleDoc} onPatchDocSchedule={onPatchDocSchedule}
         onSetDocMode={(m) => onPatch({ docMode: m, hasExpense: m === "expense" })} />
 
       <Card style={{ padding: 15 }}>
@@ -5477,4 +5470,5 @@ function Settings({ data, onClose, flash, sync, syncState, syncMsg, lastBackup, 
    부트스트랩
 ------------------------------------------------------------------- */
 import { createRoot } from "react-dom/client";
+const COUNSEL_UI = { C, FONT, Card, Label, Btn, DeleteBtn, TimePick, useDismiss, fmtPhone, fmtDateK, todayISO, uid, LogSheet, DEFAULT_TYPES };
 createRoot(document.getElementById("root")).render(<WorkBoard />);

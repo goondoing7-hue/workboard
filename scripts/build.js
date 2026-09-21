@@ -1,39 +1,36 @@
 #!/usr/bin/env node
 /* 업무보드 빌드 — src/app.jsx 와 Tailwind 결과를 dist/index.html 하나로 묶습니다 */
-const { execSync } = require("child_process");
+const { execFileSync } = require("node:child_process");
+const esbuild = require("esbuild");
 const fs = require("fs");
 const path = require("path");
 
 const R = (...p) => path.join(__dirname, "..", ...p);
-const dist = R("dist");
+const development = process.argv.includes("--dev");
+const dist = R(development ? ".dev" : "dist");
 
-fs.rmSync(dist, { recursive: true, force: true });
 fs.mkdirSync(dist, { recursive: true });
 
 console.log("· Tailwind 클래스 추출");
-execSync(`npx tailwindcss -c ${R("tailwind.config.js")} -i ${R("src/in.css")} -o ${R(".tmp.css")} --minify`, { stdio: "inherit" });
-
-/* 정의되지 않은 이름을 쓰고 있는지 먼저 확인합니다 */
-console.log("· 코드 점검");
-try {
-  execSync(`npx esbuild ${R("src/app.jsx")} --bundle --format=iife --jsx=automatic --outfile=${R(".check.js")}`, { stdio: "pipe" });
-  const code = fs.readFileSync(R(".check.js"), "utf8");
-  fs.rmSync(R(".check.js"), { force: true });
-  new Function(`return function(){ ${code} }`);   // 문법 확인
-} catch (e) {
-  console.error("✗ 코드에 문제가 있습니다:\n" + (e.stderr ? e.stderr.toString() : e.message));
-  process.exit(1);
-}
+// 셸을 거치지 않아 한글·공백 경로와 Windows 인용부호에 영향을 받지 않습니다.
+const cssFile = path.join(dist, ".build.css");
+execFileSync(process.execPath, [require.resolve("tailwindcss/lib/cli.js"),
+  "-c", R("tailwind.config.js"), "-i", R("src/in.css"), "-o", cssFile, "--minify"],
+  { cwd: R(), stdio: "inherit" });
 
 console.log("· 자바스크립트 번들");
-execSync(
-  `npx esbuild ${R("src/app.jsx")} --bundle --minify --format=iife --jsx=automatic ` +
-  `--define:process.env.NODE_ENV='"production"' --outfile=${R(".tmp.js")}`,
-  { stdio: "inherit" }
-);
-
-const css = fs.readFileSync(R(".tmp.css"), "utf8");
-const js = fs.readFileSync(R(".tmp.js"), "utf8");
+let css, js;
+try {
+  const result = esbuild.buildSync({
+    absWorkingDir: R(), entryPoints: [R("src/app.jsx")], bundle: true,
+    minify: !development, format: "iife", jsx: "automatic", write: false,
+    define: { "process.env.NODE_ENV": JSON.stringify(development ? "development" : "production") },
+  });
+  css = fs.readFileSync(cssFile, "utf8");
+  js = result.outputFiles[0].text.replace(/<\/script/gi, "<\\/script");
+} finally {
+  fs.rmSync(cssFile, { force: true });
+}
 
 const html = `<!DOCTYPE html>
 <html lang="ko">
@@ -63,7 +60,16 @@ ${css}
 <script>${js}</script>
 <script>
 if ("serviceWorker" in navigator) {
-  window.addEventListener("load", function () { navigator.serviceWorker.register("sw.js").catch(function(){}); });
+  // 로컬 개발에서는 이전 버전 캐시가 수정 사항을 가리지 않도록 합니다.
+  if (["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) {
+    navigator.serviceWorker.getRegistrations().then(function (registrations) {
+      registrations.forEach(function (registration) {
+        if (registration.scope === new URL("./", location.href).href) registration.unregister();
+      });
+    }).catch(function(){});
+  } else {
+    window.addEventListener("load", function () { navigator.serviceWorker.register("sw.js").catch(function(){}); });
+  }
 }
 </script>
 </body>
@@ -73,7 +79,4 @@ if ("serviceWorker" in navigator) {
 fs.writeFileSync(path.join(dist, "index.html"), html);
 for (const f of fs.readdirSync(R("public"))) fs.copyFileSync(R("public", f), path.join(dist, f));
 
-fs.rmSync(R(".tmp.css"), { force: true });
-fs.rmSync(R(".tmp.js"), { force: true });
-
-console.log(`✓ dist/index.html (${Math.round(html.length / 1024)}KB) 생성 완료`);
+console.log(`✓ ${path.basename(dist)}/index.html (${Math.round(Buffer.byteLength(html) / 1024)}KB) 생성 완료`);

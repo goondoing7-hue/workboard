@@ -4,6 +4,15 @@
   command = "npm run build"
   publish = "dist"
 
+[functions."google-calendar"]
+  node_bundler = "zisi"
+  included_files = ["server/googleCalendar.cjs"]
+
+[[redirects]]
+  from = "/api/google-calendar"
+  to = "/.netlify/functions/google-calendar"
+  status = 200
+
 [[headers]]
   for = "/*"
   [headers.values]
