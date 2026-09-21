@@ -1468,13 +1468,13 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
     return { id: e.id, kind: "event", text: e.title, due: e.date, dueTime: e.start || "", dueEnd: e.end || "",
       place: e.place, pid: e.pid || "", sName: "", endDate: e.endDate, allDay: e.allDay,
       pName: i >= 0 ? data.projects[i].name : "센터 일정",
-      pColor: i >= 0 ? colorOf(data.projects[i], i) : "#5A6673" };
+      pColor: i >= 0 ? colorOf(data.projects[i], i) : CENTER_COLOR };
   });
   const counselRows = (data.resv || []).filter((r) => reservationStatus(r) === "scheduled").map((r) => {
     const c = (data.clients || []).find((x) => x.id === r.clientId);
     return { id: r.id, kind: "counsel", text: (c ? c.name : externalReservation(r) ? externalReservationTitle(r) : "상담") + " · " + r.type,
       due: r.date, dueTime: r.start || "", dueEnd: r.end || "", place: r.place || "", pid: "", sName: "",
-      pName: "상담", pColor: C.green };
+      pName: "상담", pColor: COUNSEL_COLOR };
   });
   const merged = [...rows.map((r) => ({ ...r, kind: "todo" })), ...planRows, ...counselRows];
 
@@ -1661,8 +1661,8 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
                   <span className="flex-1 min-w-0">
                     <span className="flex items-center gap-1.5">
                       <span className="shrink-0 rounded" style={{ fontSize: 8.5, fontWeight: 800, padding: "1px 4px",
-                        background: cs ? C.greenSoft : ev ? "rgba(36,72,107,0.12)" : "rgba(26,33,30,0.07)",
-                        color: cs ? C.green : C.muted }}>
+                        background: cs ? COUNSEL_SOFT : ev && !r.pid ? CENTER_SOFT : ev ? "rgba(36,72,107,0.12)" : "rgba(26,33,30,0.07)",
+                        color: cs ? COUNSEL_COLOR : ev && !r.pid ? CENTER_COLOR : C.muted }}>
                         {cs ? "상담" : ev ? "일정" : "업무"}
                       </span>
                       <span className="truncate" style={{ fontSize: 12.5, color: C.ink,
@@ -2960,7 +2960,10 @@ const HOUR_H = 46;          /* 한 시간의 높이(px) */
 const DAY_FROM = 7, DAY_TO = 21;
 const CENTER = "__center__";
 const COUNSEL = "__counsel__";
-const CENTER_COLOR = "#1E6C86";   /* 청록빛 파랑 — 사업 색·회색과 겹치지 않습니다 */
+const CENTER_COLOR = "#52616F";   /* 회청색 — 기존 사업 색과 구분 */
+const CENTER_SOFT = "#EDF1F4";
+const COUNSEL_COLOR = "#7C4D9E";  /* 보라색 — 센터·기존 사업 색과 구분 */
+const COUNSEL_SOFT = "#F1EAF7";
 const EDU = "__edu__";
 const EDU_COLOR = "#8E2F52";      /* 보수교육 — 자주빛 */
 
@@ -3038,7 +3041,7 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
           {kind === "counsel" ? (
             <div style={{ marginBottom: 10 }}>
               <span className="rounded" style={{ fontSize: 9.5, fontWeight: 800, padding: "2px 6px",
-                background: C.greenSoft, color: C.green }}>상담</span>
+                background: COUNSEL_SOFT, color: COUNSEL_COLOR }}>상담</span>
               <div style={{ fontSize: 17, fontWeight: 750, marginTop: 6 }}>{title}</div>
             </div>
           ) : (
@@ -3143,7 +3146,7 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
 
           {init.id && onGoLink && (init.kind !== "event" || init.pid) && (
             <button onClick={() => onGoLink(init)} className="wb-btn w-full flex items-center gap-2 rounded-lg mt-3"
-              style={{ background: init.hl || (init.kind === "counsel" ? C.greenSoft : C.navySoft),
+              style={{ background: init.hl || (init.kind === "counsel" ? COUNSEL_SOFT : C.navySoft),
                 border: "1px solid " + C.rule, borderLeft: "4px solid " + (init.color || C.navy),
                 padding: "9px 11px", cursor: "pointer" }}>
               <span style={{ fontSize: 12.5, fontWeight: 700, color: C.ink }}>
@@ -3203,7 +3206,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
     ...(events || []).filter((e) => !isHiddenCenterEvent(e)).map((e) => ({
       ...e, id: e.id, kind: "event", title: e.title, date: e.date, start: e.start || "", end: e.end || "",
       pid: e.pid || "", sid: "", place: e.place, memo: e.memo, done: !!e.done,
-      color: colorFor(e.pid || ""), hl: "",
+      color: colorFor(e.pid || ""), hl: e.pid ? "" : CENTER_SOFT,
     })),
     ...(data.resv || []).filter((r) => !["cancelled", "noshow"].includes(reservationStatus(r))).map((r) => {
       const c = (data.clients || []).find((x) => x.id === r.clientId);
@@ -3211,9 +3214,10 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
         date: r.date, start: r.start || "", end: r.end || "", pid: "", sid: "",
         readOnly: externalReservation(r), endDate: r.endDate, allDay: r.allDay,
         place: r.place || "", memo: r.memo, clientId: r.clientId, rtype: r.type, done: reservationStatus(r) === "done",
-        color: C.green, hl: C.greenSoft };
+        color: COUNSEL_COLOR, hl: COUNSEL_SOFT };
     }),
-  ].filter((x) => x.date && !hidden.includes(x.kind === "counsel" ? COUNSEL : x.pid === EDU ? EDU : (x.pid || CENTER)));
+  // 기존 보수교육 일정은 데이터를 유지하고 센터 일정 필터로 함께 표시합니다.
+  ].filter((x) => x.date && !hidden.includes(x.kind === "counsel" ? COUNSEL : x.pid === EDU ? CENTER : (x.pid || CENTER)));
 
   const onDay = (iso) => all.filter((x) => x.date === iso || (x.date < iso && x.endDate && (iso < x.endDate || (iso === x.endDate && !x.allDay && x.end && x.end !== "00:00"))))
     .map((x) => !x.endDate || x.endDate === x.date ? x : x.allDay ? { ...x, noDrag: x.endDate > shiftISO(x.date, 1) } : { ...x, original: x, noDrag: true, date: iso, start: x.date < iso ? "00:00" : x.start, end: x.endDate > iso ? "23:59" : x.end });
@@ -3387,9 +3391,9 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
                 title="해당 화면으로 이동"
                 className="wb-btn shrink-0 rounded" style={{ fontSize: 8.5, fontWeight: 800, padding: "2px 5px",
                   border: "none", cursor: "pointer",
-                  background: x.pid === EDU ? "rgba(142,47,82,0.12)" : x.kind === "counsel" ? C.greenSoft
-                    : x.kind === "event" ? "rgba(30,108,134,0.12)" : "rgba(26,33,30,0.07)",
-                  color: x.pid === EDU ? EDU_COLOR : x.kind === "counsel" ? C.green : C.muted }}>
+                  background: x.pid === EDU ? "rgba(142,47,82,0.12)" : x.kind === "counsel" ? COUNSEL_SOFT
+                    : x.kind === "event" && !x.pid ? CENTER_SOFT : x.kind === "event" ? "rgba(30,108,134,0.12)" : "rgba(26,33,30,0.07)",
+                  color: x.pid === EDU ? EDU_COLOR : x.kind === "counsel" ? COUNSEL_COLOR : x.kind === "event" && !x.pid ? CENTER_COLOR : C.muted }}>
                 {x.pid === EDU ? "교육" : x.kind === "event" ? "일정" : x.kind === "counsel" ? "상담" : "업무"}
               </button>
             )}
@@ -3530,7 +3534,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
       <Card style={{ padding: "10px 12px" }}>
         <Label>표시할 일정</Label>
         <div className="flex items-center gap-1.5 flex-wrap mt-2">
-          {[{ id: CENTER, name: "센터 일정", color: CENTER_COLOR }, { id: COUNSEL, name: "상담", color: C.green }, { id: EDU, name: "보수교육", color: EDU_COLOR }, ...data.projects.map((p, i) => ({ id: p.id, name: p.name, color: colorOf(p, i) }))]
+          {[{ id: CENTER, name: "센터 일정", color: CENTER_COLOR }, { id: COUNSEL, name: "상담", color: COUNSEL_COLOR }, ...data.projects.map((p, i) => ({ id: p.id, name: p.name, color: colorOf(p, i) }))]
             .map((o) => {
               const off = hidden.includes(o.id);
               return (
