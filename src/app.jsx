@@ -1671,7 +1671,7 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
                         display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", overflowWrap: "anywhere" }}>{r.text}</span>
                     </span>
                     <span className="block truncate" style={{ fontSize: 10, color: C.faint }}>
-                      {cs ? [r.place || "장소 미정", r.session && `${r.session}회기`, r.remote && "예정 · 비대면"].filter(Boolean).join(" · ")
+                      {cs ? [r.place || "장소 미정", r.session && `${r.session}회기`, r.remote && "비대면"].filter(Boolean).join(" · ")
                         : ev ? (r.pName === "센터 일정" ? "센터 일정" : shortName(r.pName) + " 일정") + (r.place ? " · " + r.place : "")
                         : shortName(r.pName) + " · " + r.sName}
                     </span>
@@ -3450,7 +3450,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
               {x.title}{compact && x.place ? ` · ${x.place}` : ""}{compact && x.remote ? " · 비대면" : ""}
             </span>
             {!compact && x.kind === "counsel" && x.remote && <span className="shrink-0" style={{ fontSize: 9, color: COUNSEL_COLOR, fontWeight: 650 }}>
-              {x.done ? "완료" : "예정"} · 비대면
+              비대면
             </span>}
           </div>
 

@@ -6,6 +6,7 @@ import { externalReservation, reservationLastDate } from "./googleCalendarDomain
 import { GoogleReservationEditor } from "./googleCalendar.jsx";
 import { counselingPresentation } from "./counselingPresentation.mjs";
 import CounselScheduleCard from "./CounselScheduleCard.jsx";
+import ClientMemo from "./ClientMemo.jsx";
 
 // 기존 업무보드의 색과 공용 UI를 함께 사용합니다. 데이터는 WorkBoard에 그대로 둡니다.
 const UI = createContext(null);
@@ -232,6 +233,7 @@ function CounselContent({ data, onSaveClient, onDeleteClient, onSaveResv, onDele
   const sessions = reservations.filter((r) => r.clientId === openId).sort(sortSessions);
   const completed = sessions.filter((r) => reservationStatus(r) === "done").length;
   const upcoming = reservations.filter((r) => reservationStatus(r) === "scheduled" && reservationLastDate(r) >= todayISO()).sort(sortSessions);
+  const todayReservations = upcoming.filter((r) => r.date <= todayISO() && reservationLastDate(r) >= todayISO());
   const history = reservations.filter((r) => reservationStatus(r) !== "scheduled" || reservationLastDate(r) < todayISO()).sort((a, b) => sortSessions(b, a));
   const filtered = clients.filter((c) => matchesClient(c, query) && (statusFilter === "all" || clientStatus(c) === statusFilter));
   const log = reservations.find((r) => r.id === logId);
@@ -272,11 +274,33 @@ function CounselContent({ data, onSaveClient, onDeleteClient, onSaveResv, onDele
         <div className="flex items-center justify-between gap-2 rounded-lg mt-3" style={{ background: C.bg, padding: "9px 11px" }}><span style={{ fontSize: 12, color: C.muted }}>상담 진행</span><span style={{ fontSize: 13, fontWeight: 750, color: C.navy }}>{completed}회 완료{activeClient.targetSessions ? ` / 목표 ${activeClient.targetSessions}회` : ""}</span></div>
         {activeClient.issue && <div className="mt-3"><Label>주호소 문제</Label><div style={{ fontSize: 12.5, lineHeight: 1.6, marginTop: 5, whiteSpace: "pre-wrap" }}>{activeClient.issue}</div></div>}
         {activeClient.note && <details className="mt-3" style={{ fontSize: 12, color: C.muted }}><summary style={{ cursor: "pointer", fontWeight: 650 }}>특이사항</summary><div style={{ marginTop: 7, whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{activeClient.note}</div></details>}
+        <ClientMemo key={activeClient.id} client={activeClient} onSave={onSaveClient} ui={ui} />
       </Card>
       <Card style={{ padding: "13px 15px" }}><div className="flex items-center justify-between gap-2 mb-2"><Label>상담 회기 · {sessions.filter((r) => ["scheduled", "done"].includes(reservationStatus(r))).length}회</Label><Btn size="sm" kind="solid" icon={Plus} onClick={() => setReservationEditor({ clientId: activeClient.id, lockClient: true })}>상담 예약</Btn></div>{sessions.length ? sessions.map(row) : <Empty>예약된 회기가 없습니다.</Empty>}</Card>
     </> : <>
       <div className="flex items-center gap-2"><Btn size="sm" kind="solid" icon={Plus} onClick={() => setClientEditor({})}>내담자 등록</Btn><Btn size="sm" icon={CalendarDays} onClick={() => setReservationEditor({})}>상담 예약</Btn></div>
-      <div className="grid grid-cols-3 gap-2">{[["오늘 예약", upcoming.filter((r) => r.date <= todayISO() && reservationLastDate(r) >= todayISO()).length], ["상담대기", clients.filter((c) => clientStatus(c) === "waiting").length], ["상담진행", clients.filter((c) => clientStatus(c) === "active").length]].map(([label, count]) => <Card key={label} style={{ padding: "10px 13px" }}><span style={{ fontSize: 10.5, color: C.muted }}>{label}</span><div style={{ fontSize: 20, fontWeight: 750, marginTop: 2, color: C.navy }}>{count}<span style={{ fontSize: 10, fontWeight: 400, marginLeft: 4 }}>{label === "오늘 예약" ? "건" : "명"}</span></div></Card>)}</div>
+      <Card style={{ padding: "13px 15px" }}>
+        <section aria-label="오늘 예약">
+          <div className="flex items-center justify-between gap-x-3 gap-y-2 flex-wrap" style={{ marginBottom: 9 }}>
+            <div className="flex items-center gap-2"><CalendarDays size={14} color={C.navy} /><Label>오늘 예약 <span style={{ color: C.navy }}>{todayReservations.length}건</span></Label></div>
+            <div className="flex items-center gap-3" style={{ fontSize: 10.5, color: C.muted }}>
+              <span>상담대기 <strong style={{ color: C.navy }}>{clients.filter((c) => clientStatus(c) === "waiting").length}</strong>명</span>
+              <span>상담진행 <strong style={{ color: C.navy }}>{clients.filter((c) => clientStatus(c) === "active").length}</strong>명</span>
+            </div>
+          </div>
+          {todayReservations.length ? todayReservations.map((r) => {
+            const presentation = counselingPresentation(r, clients.find((client) => client.id === r.clientId));
+            const name = presentation.name || presentation.title;
+            return <button type="button" key={r.id} aria-label={`${name} 내담자 정보`} onClick={() => showClient(r)} className="wb-btn w-full text-left"
+              style={{ display: "grid", gridTemplateColumns: "92px minmax(0, 1fr) 14px", gap: 9, alignItems: "center", minHeight: 51, padding: "10px 0", border: "none", borderTop: `1px solid ${C.rule}`, background: "none", cursor: "pointer" }}>
+              <span style={{ color: C.navy, fontSize: 11.5, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{r.allDay ? "종일" : r.start ? `${r.start}${r.end ? "–" + r.end : ""}` : "시간 미정"}</span>
+              <span className="min-w-0"><span className="flex items-center gap-1.5 flex-wrap"><span style={{ color: C.ink, fontSize: 13.5, fontWeight: 750, overflowWrap: "anywhere" }}>{name}</span>{presentation.remote && <Badge tone="green">비대면</Badge>}</span>
+                <span className="flex items-center gap-1" style={{ marginTop: 3, color: C.muted, fontSize: 11 }}><MapPin size={10} className="shrink-0" />{presentation.place || "장소 미정"}</span></span>
+              <ChevronRight size={13} color={C.faint} />
+            </button>;
+          }) : <Empty>오늘 남은 상담 예약이 없습니다.</Empty>}
+        </section>
+      </Card>
       <Card style={{ padding: "14px 15px" }}>
         <div className="flex items-center gap-2 mb-3"><Users size={14} color={C.navy} /><Label>내담자 {clients.length}</Label></div>
         <div className="flex gap-2 mb-2"><div className="relative flex-1 min-w-0"><Search size={14} color={C.faint} style={{ position: "absolute", top: 14, left: 10 }} /><input aria-label="내담자 검색" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="이름 · 연락처 · 상담자 검색" style={{ ...inp, paddingLeft: 31, fontSize: 12 }} /></div>
