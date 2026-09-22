@@ -2460,7 +2460,12 @@ export default function WorkBoard() {
           )}
 
           {tab === "counsel" && (
-            <><div className="flex justify-end mb-3">
+            <><div className="flex justify-end gap-2 flex-wrap mb-3">
+              <a href="./performance.html" target="_blank" rel="noopener noreferrer"
+                className="wb-btn inline-flex items-center gap-2 rounded-xl"
+                style={{ padding: "10px 14px", background: C.navy, color: "white", fontSize: 13, fontWeight: 700, textDecoration: "none" }}>
+                <ListChecks size={16} />상담 실적 관리 ↗
+              </a>
               <a href="./adhd.html" target="_blank" rel="noopener noreferrer"
                 className="wb-btn inline-flex items-center gap-2 rounded-xl"
                 style={{ padding: "10px 14px", background: C.navySoft, color: C.navy, fontSize: 13, fontWeight: 700, textDecoration: "none" }}>

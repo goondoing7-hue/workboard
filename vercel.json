@@ -3,6 +3,9 @@
   "outputDirectory": "dist",
   "framework": null,
   "functions": {
+    "api/performance-sheets.js": {
+      "includeFiles": "server/performanceSheets.cjs"
+    },
     "api/google-calendar-auth.js": {
       "includeFiles": "server/googleCalendarSession.cjs"
     },
@@ -42,6 +45,15 @@
     },
     {
       "source": "/sw.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/performance.html",
       "headers": [
         {
           "key": "Cache-Control",
