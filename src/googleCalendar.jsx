@@ -6,6 +6,7 @@ import { useGoogleCalendarWriter, CalendarWriteControls } from "./googleCalendar
 import { counselingCalendarRequest } from "./googleCalendarSession.mjs";
 import { readGoogleCalendar } from "./googleCalendarRead.mjs";
 import { CenterCalendarPanel } from "./centerCalendar.jsx";
+import CounselScheduleCard from "./CounselScheduleCard.jsx";
 
 export function useGoogleCalendar({ data, setData, active, isReservationStored }) {
   const writer = useGoogleCalendarWriter({ data, setData, active, isReservationStored });
@@ -159,32 +160,32 @@ export function GoogleCalendarPanel({ ui, connection }) {
   </Card>;
 }
 
-export function GoogleReservationEditor({ ui, reservation, clients, types, onSave, onClose }) {
+export function GoogleReservationEditor({ ui, reservation, clients, reservations = [], types, onSave, onClose }) {
   const { C, Btn, FONT, useDismiss } = ui;
   const dismiss = useDismiss(onClose);
   const [clientId, setClientId] = useState(reservation.clientId || "");
   const [type, setType] = useState(reservation.type || types[0] || "개인상담");
   const ref = useRef(null);
   const titleId = React.useId();
-  useEffect(() => { const before = document.activeElement; ref.current?.querySelector("select")?.focus(); return () => before?.focus?.(); }, []);
+  useEffect(() => { const before = document.activeElement; ref.current?.querySelector("button")?.focus(); return () => before?.focus?.(); }, []);
   const inp = { width: "100%", minHeight: 42, border: `1px solid ${C.rule}`, borderRadius: 8, padding: "8px", background: C.surface, color: C.ink, fontFamily: FONT, fontSize: 13 };
-  const endDate = reservation.allDay && reservation.endDate ? new Date(new Date(`${reservation.endDate}T12:00:00Z`).getTime() - 86400000).toISOString().slice(0, 10) : reservation.endDate;
   return <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade" style={{ zIndex: 65, background: "rgba(26,33,30,0.4)" }} {...dismiss}>
     <div ref={ref} role="dialog" aria-modal="true" aria-labelledby={titleId} onKeyDown={(e) => {
       if (e.key === "Escape") { e.stopPropagation(); onClose(); }
-      if (e.key === "Tab") { const nodes = [...ref.current.querySelectorAll("button,select,a[href]")].filter((n) => !n.disabled); const first = nodes[0], last = nodes[nodes.length - 1]; if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); } }
+      if (e.key === "Tab") { const nodes = [...ref.current.querySelectorAll("button,select,a[href],summary")].filter((n) => !n.disabled && n.getClientRects().length); const first = nodes[0], last = nodes[nodes.length - 1]; if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); } }
     }} className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet" style={{ maxWidth: 470, maxHeight: "90dvh", overflowY: "auto", background: C.bg, padding: 18 }}>
-      <div className="flex items-center justify-between"><span id={titleId} style={{ fontSize: 15, fontWeight: 750 }}>구글 상담 예약</span><button type="button" aria-label="닫기" onClick={onClose} style={{ border: "none", background: "none", color: C.muted, width: 36, height: 36, cursor: "pointer" }}><X size={18} /></button></div>
-      <div style={{ background: C.greenSoft, borderRadius: 10, padding: 12, margin: "10px 0 15px" }}>
-        <div style={{ fontWeight: 750, fontSize: 14 }}>{reservation.externalTitle || "구글 상담"}</div>
-        <div style={{ fontSize: 12, marginTop: 7 }}>{reservation.date}{endDate && endDate !== reservation.date ? ` ~ ${endDate}` : ""} · {reservation.allDay ? "종일" : `${reservation.start || "시간 미정"}${reservation.end ? `–${reservation.end}` : ""}`}</div>
-        {reservation.place && <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>{reservation.place}</div>}
-        {reservation.externalCancelled && <div style={{ color: C.seal, fontSize: 11.5, marginTop: 6 }}>구글 캘린더에서 취소되었거나 삭제된 일정입니다.</div>}
-      </div>
+      <div className="flex justify-end"><button type="button" aria-label="닫기" onClick={onClose} style={{ border: "none", background: "none", color: C.muted, width: 36, height: 36, cursor: "pointer" }}><X size={18} /></button></div>
+      <div style={{ marginBottom: 15 }}><CounselScheduleCard ui={ui} reservation={{ ...reservation, clientId, type }} clients={clients} reservations={reservations} titleId={titleId} /></div>
+      <details style={{ border: `1px solid ${C.rule}`, borderRadius: 10, padding: "10px 12px", background: C.surface }}>
+      <summary style={{ color: C.muted, fontSize: 12, fontWeight: 650, cursor: "pointer" }}>내담자 연결·분류 수정</summary>
+      <div style={{ marginTop: 12 }}>
       <label style={{ fontSize: 11.5, fontWeight: 700, color: C.muted }}>내담자 연결<select aria-label="내담자 연결" value={clientId} onChange={(e) => setClientId(e.target.value)} style={{ ...inp, marginTop: 5 }}><option value="">연결하지 않음</option>{clients.map((c) => <option key={c.id} value={c.id}>{c.name}{c.birth ? ` · ${c.birth}` : ""}</option>)}</select></label>
       <label className="block mt-3" style={{ fontSize: 11.5, fontWeight: 700, color: C.muted }}>상담 유형<select aria-label="상담 유형" value={type} onChange={(e) => setType(e.target.value)} style={{ ...inp, marginTop: 5 }}>{[...new Set([...types, type])].filter(Boolean).map((t) => <option key={t}>{t}</option>)}</select></label>
-      <div style={{ color: C.muted, fontSize: 11.5, lineHeight: 1.7, margin: "13px 0" }}>내담자를 연결하면 해당 내담자의 회기에 포함됩니다. 제목·날짜·시간·장소는 구글에서 수정한 내용으로 갱신됩니다. 상담일지와 완료 기록은 업무보드에 보관합니다.</div>
-      <div className="flex items-center justify-between gap-2 flex-wrap"><a href={`https://calendar.google.com/calendar/u/0/r?cid=${encodeURIComponent(reservation.calendarId)}`} target="_blank" rel="noopener noreferrer" style={{ color: C.navy, fontSize: 11.5 }}>구글 캘린더 열기</a><div className="flex gap-2"><Btn size="sm" onClick={onClose}>닫기</Btn><Btn size="sm" kind="solid" onClick={() => { if (onSave({ id: reservation.id, clientId, type }) !== false) onClose(); }}>연결 저장</Btn></div></div>
+      <div style={{ color: C.muted, fontSize: 11.5, lineHeight: 1.7, margin: "12px 0" }}>내담자를 연결하면 해당 내담자의 회기에 포함됩니다. 상담일지와 완료 기록은 업무보드에 보관합니다.</div>
+      <div className="flex justify-end"><Btn size="sm" kind="solid" onClick={() => { if (onSave({ id: reservation.id, clientId, type }) !== false) onClose(); }}>연결 저장</Btn></div>
+      </div></details>
+      <div style={{ color: C.muted, fontSize: 11.5, lineHeight: 1.7, margin: "12px 0" }}>제목·날짜·시간·장소는 원본 일정에서 수정할 수 있습니다.</div>
+      <div className="flex items-center justify-between gap-2 flex-wrap"><a href={`https://calendar.google.com/calendar/u/0/r?cid=${encodeURIComponent(reservation.calendarId)}`} target="_blank" rel="noopener noreferrer" style={{ color: C.navy, fontSize: 11.5 }}>원본 일정 열기</a><Btn size="sm" onClick={onClose}>닫기</Btn></div>
     </div>
   </div>;
 }

@@ -56,7 +56,13 @@ export function externalReservation(reservation) {
 
 /** Returns an empty string for local reservations, allowing an existing fallback. */
 export function externalReservationTitle(reservation) {
-  return externalReservation(reservation) ? text(reservation.externalTitle) || "구글 상담" : "";
+  return externalReservation(reservation) ? text(reservation.externalTitle) || "상담 일정" : "";
+}
+
+/** Calendar labels keep the source title without adding provider or type labels. */
+export function scheduleReservationTitle(reservation, client) {
+  return externalReservation(reservation) ? externalReservationTitle(reservation)
+    : text(client?.name) || text(reservation?.title) || "상담 일정";
 }
 
 /** Last occupied calendar date, respecting an exclusive all-day/midnight end. */
@@ -113,7 +119,7 @@ function sourceFields(event) {
     || !validDate(endDate) || endDate < event.date || (allDay && endDate === event.date)) {
     throw new Error("구글 일정의 날짜 또는 시간을 확인해 주세요. 기존 예약은 변경하지 않았습니다.");
   }
-  return { externalTitle: text(event.title) || "구글 상담", date: event.date,
+  return { externalTitle: text(event.title) || "상담 일정", date: event.date,
     endDate, start, end, place: text(event.place), allDay };
 }
 

@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import CounselBoard from "./counseling.jsx";
+import CounselScheduleCard from "./CounselScheduleCard.jsx";
+import { calendarEventsOnDay, isAllDaySpan, layoutAllDayEvents } from "./scheduleLayout.mjs";
 import { useGoogleCalendar, GoogleCalendarButton, GoogleReservationEditor } from "./googleCalendar.jsx";
 import { useCenterCalendar } from "./centerCalendar.jsx";
 import { prepareCenterEvent, deleteCenterEvent, isHiddenCenterEvent } from "./centerCalendarDomain.mjs";
-import { externalReservation, externalReservationTitle } from "./googleCalendarDomain.mjs";
+import { externalReservation, scheduleReservationTitle } from "./googleCalendarDomain.mjs";
 import { mergeReservation, reservationStatus, reservationScheduleChanged, validateReservation } from "./counselingDomain.mjs";
 import { documentScheduleOf, documentScheduleError, patchDocumentSchedule, toggleDocument, formatDocumentTime } from "./documentSchedule.mjs";
 import {
@@ -1472,7 +1474,7 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
   });
   const counselRows = (data.resv || []).filter((r) => reservationStatus(r) === "scheduled").map((r) => {
     const c = (data.clients || []).find((x) => x.id === r.clientId);
-    return { id: r.id, kind: "counsel", text: (c ? c.name : externalReservation(r) ? externalReservationTitle(r) : "상담") + " · " + r.type,
+    return { id: r.id, kind: "counsel", text: scheduleReservationTitle(r, c),
       due: r.date, dueTime: r.start || "", dueEnd: r.end || "", place: r.place || "", pid: "", sName: "",
       pName: "상담", pColor: COUNSEL_COLOR };
   });
@@ -3003,7 +3005,28 @@ const SheetRow = ({ icon: Icon, children }) => (
   </div>
 );
 
-function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
+function AllDayBars({ layout, onOpen, rowOffset = 0 }) {
+  return layout.segments.map(({ event: x, startCol, endCol, lane, continuesBefore, continuesAfter }) => (
+    <button key={`${x.kind}:${x.id}`} type="button" data-calendar-span={x.id}
+      aria-label={`${x.title}, ${x.allDay ? "종일" : "시간 미정"}, ${x.date}${x.endDate && x.endDate > shiftISO(x.date, 1) ? `부터 ${shiftISO(x.endDate, -1)}까지` : ""}`}
+      title={x.title} onClick={(e) => { e.stopPropagation(); onOpen(x.original || x); }}
+      draggable={!x.readOnly && !x.noDrag && !isAllDaySpan(x)}
+      onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData("text/plan", x.id); e.dataTransfer.effectAllowed = "move"; }}
+      className="wb-btn flex items-center gap-1 min-w-0 text-left"
+      style={{ gridColumn: `${startCol + 1} / ${endCol + 1}`, gridRow: lane + 1 + rowOffset,
+        position: "relative", zIndex: 2, margin: "1px 2px", padding: "3px 6px", border: "none",
+        borderRadius: `${continuesBefore ? 0 : 5}px ${continuesAfter ? 0 : 5}px ${continuesAfter ? 0 : 5}px ${continuesBefore ? 0 : 5}px`,
+        background: x.done ? "#DCE0DB" : x.color, color: x.done ? C.muted : "#fff",
+        fontSize: 10.5, lineHeight: 1.4, fontWeight: 650, cursor: "pointer", overflow: "hidden",
+        textDecoration: x.done ? "line-through" : "none" }}>
+      {continuesBefore && <span aria-hidden="true">‹</span>}
+      <span className="truncate flex-1">{x.title}</span>
+      {continuesAfter && <span aria-hidden="true">›</span>}
+    </button>
+  ));
+}
+
+function PlanSheet({ init, projects, clients = [], reservations = [], onSave, onDelete, onClose, onGoLink }) {
   const dismiss = useDismiss(onClose);
   const [kind, setKind] = useState(init.kind || "event");
   const [title, setTitle] = useState(init.title || "");
@@ -3061,11 +3084,9 @@ function PlanSheet({ init, projects, onSave, onDelete, onClose, onGoLink }) {
 
         <div style={{ padding: "0 16px 16px" }}>
           {kind === "counsel" ? (
-            <div style={{ marginBottom: 10 }}>
-              <span className="rounded" style={{ fontSize: 9.5, fontWeight: 800, padding: "2px 6px",
-                background: COUNSEL_SOFT, color: COUNSEL_COLOR }}>상담</span>
-              <div style={{ fontSize: 17, fontWeight: 750, marginTop: 6 }}>{title}</div>
-            </div>
+            <CounselScheduleCard ui={{ C, FONT }} clients={clients} reservations={reservations}
+              reservation={{ ...(reservations.find((r) => r.id === init.id) || {}), title, date,
+                start: noTime ? "" : start, end: noTime ? "" : end }} />
           ) : (
           <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="제목 추가" autoFocus
             className="w-full" style={{ fontSize: 17, fontWeight: 700, color: C.ink, background: "transparent",
@@ -3232,7 +3253,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
     })),
     ...(data.resv || []).filter((r) => !["cancelled", "noshow"].includes(reservationStatus(r))).map((r) => {
       const c = (data.clients || []).find((x) => x.id === r.clientId);
-      return { id: r.id, kind: "counsel", title: (externalReservation(r) ? "구글 · " : "") + (c ? c.name : externalReservation(r) ? externalReservationTitle(r) : "상담") + " · " + r.type,
+      return { id: r.id, kind: "counsel", title: scheduleReservationTitle(r, c),
         date: r.date, start: r.start || "", end: r.end || "", pid: "", sid: "",
         readOnly: externalReservation(r), endDate: r.endDate, allDay: r.allDay,
         place: r.place || "", memo: r.memo, clientId: r.clientId, rtype: r.type, done: reservationStatus(r) === "done",
@@ -3241,10 +3262,10 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
   // 기존 보수교육 일정은 데이터를 유지하고 센터 일정 필터로 함께 표시합니다.
   ].filter((x) => x.date && !hidden.includes(x.kind === "counsel" ? COUNSEL : x.pid === EDU ? CENTER : (x.pid || CENTER)));
 
-  const onDay = (iso) => all.filter((x) => x.date === iso || (x.date < iso && x.endDate && (iso < x.endDate || (iso === x.endDate && !x.allDay && x.end && x.end !== "00:00"))))
-    .map((x) => !x.endDate || x.endDate === x.date ? x : x.allDay ? { ...x, noDrag: x.endDate > shiftISO(x.date, 1) } : { ...x, original: x, noDrag: true, date: iso, start: x.date < iso ? "00:00" : x.start, end: x.endDate > iso ? "23:59" : x.end });
+  const onDay = (iso) => calendarEventsOnDay(all, iso);
   const timed = (iso) => onDay(iso).filter((x) => x.start).sort((a, b) => a.start.localeCompare(b.start));
   const untimed = (iso) => onDay(iso).filter((x) => !x.start);
+  const spanEvents = all.filter(isAllDaySpan);
 
   /* 시간표에서 위치 계산 */
   const topOf = (t) => ((toMin(t) - DAY_FROM * 60) / 60) * HOUR_H;
@@ -3252,7 +3273,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
 
   /* 날짜와 시각을 함께 옮깁니다 */
   const moveTo = (x, date, start, end) => {
-    if (x.readOnly || x.noDrag) return;
+    if (x.readOnly || x.noDrag || isAllDaySpan(x)) return;
     if (x.kind === "todo") onSetTodoTime(x.pid, x.sid, x.id, { due: date, dueTime: start, dueEnd: end });
     else if (x.kind === "counsel") onSaveResv({ id: x.id, date, start, end });
     else onSaveEvent({ id: x.id, date, start, end, allDay: !start, endDate: start ? date : shiftISO(date, 1) });
@@ -3503,6 +3524,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
       return { iso, wd: ["월", "화", "수", "목", "금", "토", "일"][k], num: Number(iso.slice(8, 10)) };
     });
   })();
+  const weekAllDay = layoutAllDayEvents(all, weekDays.map((d) => d.iso));
 
   const headLabel = mode === "month"
     ? Number(pick.slice(5, 7)) + "월"
@@ -3581,45 +3603,53 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
               <div key={d} style={{ fontSize: 10, fontWeight: 700, color: C.faint, textAlign: "center" }}>{d}</div>
             ))}
           </div>
-          <div className="grid grid-cols-7" style={{ gap: 2 }}>
-            {monthCells.map((c) => {
-              const list = onDay(c.iso);
-              const isToday = c.iso === todayISO();
-              return (
-                <button key={c.iso} onClick={() => { setPick(c.iso); setMode("day"); }}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    const id = e.dataTransfer.getData("text/plan");
-                    const x = all.find((y) => y.id === id);
-                    if (x) moveTo(x, c.iso, x.start, x.end);
-                  }}
-                  className="wb-btn rounded-lg text-left"
-                  style={{ minHeight: 58, padding: "3px 4px", cursor: "pointer",
-                    background: "transparent", border: "1px solid transparent",
-                    opacity: c.inMonth ? 1 : 0.35 }}>
-                  <div className="flex items-center" style={{ height: 18 }}>
-                    <span className="flex items-center justify-center rounded-full" style={{
-                      minWidth: 18, height: 18, fontSize: 10.5, fontWeight: 750, fontVariantNumeric: "tabular-nums",
-                      background: isToday ? C.navy : "transparent", color: isToday ? "#fff" : C.ink }}>{c.num}</span>
-                  </div>
-                  {list.slice(0, 3).map((x) => (
-                    <div key={x.id} draggable={!x.readOnly && !x.noDrag}
-                      onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData("text/plan", x.id); e.dataTransfer.effectAllowed = "move"; }}
-                      className="truncate" style={{ fontSize: 8.5, color: C.ink, lineHeight: 1.35,
-                        borderLeft: "2px solid " + x.color, paddingLeft: 3, marginTop: 1, cursor: "grab" }}>{x.title}</div>
-                  ))}
-                  {list.length > 3 && <div style={{ fontSize: 8, color: C.faint }}>+{list.length - 3}</div>}
+          {Array.from({ length: 6 }, (_, w) => {
+            const days = monthCells.slice(w * 7, w * 7 + 7);
+            const spans = layoutAllDayEvents(spanEvents, days.map((d) => d.iso));
+            return <div key={days[0].iso} className="grid grid-cols-7" data-calendar-week={days[0].iso}
+              style={{ gap: "1px 2px", gridTemplateRows: `24px ${spans.laneCount ? `repeat(${spans.laneCount}, 25px) ` : ""}minmax(38px, auto)`,
+                borderTop: w ? "1px solid " + C.rule : "none", paddingBottom: 3 }}>
+              {days.map((c, i) => {
+                const entries = onDay(c.iso).filter((x) => !isAllDaySpan(x));
+                const dropOnDate = (e) => {
+                  e.preventDefault(); const x = all.find((y) => y.id === e.dataTransfer.getData("text/plan"));
+                  if (x) moveTo(x, c.iso, x.start, x.end);
+                };
+                return <React.Fragment key={c.iso}>
+                <button type="button" aria-label={`${fmtDateK(c.iso)} 일간 보기`}
+                  onClick={() => { setPick(c.iso); setMode("day"); }} className="wb-btn flex items-center text-left"
+                  onDragOver={(e) => e.preventDefault()} onDrop={dropOnDate}
+                  style={{ gridColumn: i + 1, gridRow: 1, background: "transparent", border: "none", padding: "2px 4px", cursor: "pointer", opacity: c.inMonth ? 1 : 0.4 }}>
+                  <span className="flex items-center justify-center rounded-full" style={{ minWidth: 20, height: 20,
+                    fontSize: 11, fontWeight: 750, fontVariantNumeric: "tabular-nums",
+                    background: c.iso === todayISO() ? C.navy : "transparent", color: c.iso === todayISO() ? "#fff" : C.ink }}>{c.num}</span>
                 </button>
-              );
-            })}
-          </div>
+                <div onClick={() => { setPick(c.iso); setMode("day"); }}
+                  onDragOver={(e) => e.preventDefault()} onDrop={dropOnDate}
+                  style={{ gridColumn: i + 1, gridRow: spans.laneCount + 2, minWidth: 0, padding: "2px 3px", cursor: "pointer", opacity: c.inMonth ? 1 : 0.4 }}>
+                  {entries.slice(0, 3).map((x) => (
+                    <button key={`${x.kind}:${x.id}`} type="button" title={x.title} aria-label={x.title}
+                      onClick={(e) => { e.stopPropagation(); setSheet(x.original || x); }}
+                      draggable={!x.readOnly && !x.noDrag}
+                      onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData("text/plan", x.id); e.dataTransfer.effectAllowed = "move"; }}
+                      className="wb-btn block w-full text-left truncate" style={{ fontSize: 10.5, color: C.ink, lineHeight: 1.5,
+                        border: "none", borderLeft: "2px solid " + x.color, background: "transparent", padding: "1px 3px", marginTop: 2, cursor: "pointer" }}>{x.title}</button>
+                  ))}
+                  {entries.length > 3 && <button type="button" className="wb-btn"
+                    style={{ fontSize: 10, color: C.muted, border: "none", background: "transparent", cursor: "pointer" }}>
+                    +{entries.length - 3}</button>}
+                </div>
+              </React.Fragment>;})}
+              <AllDayBars layout={spans} onOpen={setSheet} rowOffset={1} />
+            </div>;
+          })}
         </Card>
       )}
 
       {/* 주간 */}
       {mode === "week" && (
         <Card style={{ padding: "8px 9px 10px", overflowX: "auto" }}>
+          <div style={{ minWidth: 468 }}>
           <div className="grid" style={{ gridTemplateColumns: "34px repeat(7, minmax(62px, 1fr))", gap: 0 }}>
             <div />
             {weekDays.map((d) => (
@@ -3636,6 +3666,12 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
               </button>
             ))}
           </div>
+          {weekAllDay.laneCount > 0 && <div className="flex" style={{ borderTop: "1px solid " + C.rule, padding: "4px 0 6px" }}>
+            <div style={{ width: 34, flexShrink: 0, color: C.muted, fontSize: 10, paddingTop: 5 }}>종일</div>
+            <div className="grid flex-1 min-w-0" style={{ gridTemplateColumns: "repeat(7, minmax(62px, 1fr))", gridTemplateRows: `repeat(${weekAllDay.laneCount}, 25px)` }}>
+              <AllDayBars layout={weekAllDay} onOpen={setSheet} />
+            </div>
+          </div>}
           <div className="grid" style={{ gridTemplateColumns: "34px repeat(7, minmax(62px, 1fr))" }}>
             <div style={{ position: "relative", height: (DAY_TO - DAY_FROM + 1) * HOUR_H }}>
               {hours.map((h, i) => (
@@ -3648,6 +3684,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
                 <DayGrid iso={d.iso} compact />
               </div>
             ))}
+          </div>
           </div>
         </Card>
       )}
@@ -3699,8 +3736,8 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
       )}
 
       {sheet && (sheet.readOnly
-        ? (data.resv || []).some((r) => r.id === sheet.id) && <GoogleReservationEditor ui={COUNSEL_UI} reservation={(data.resv || []).find((r) => r.id === sheet.id)} clients={data.clients || []} types={data.resvTypes?.length ? data.resvTypes : DEFAULT_TYPES} onSave={onSaveResv} onClose={() => setSheet(null)} />
-        : <PlanSheet init={sheet} projects={data.projects}
+        ? (data.resv || []).some((r) => r.id === sheet.id) && <GoogleReservationEditor ui={COUNSEL_UI} reservation={(data.resv || []).find((r) => r.id === sheet.id)} clients={data.clients || []} reservations={data.resv || []} types={data.resvTypes?.length ? data.resvTypes : DEFAULT_TYPES} onSave={onSaveResv} onClose={() => setSheet(null)} />
+        : <PlanSheet init={sheet} projects={data.projects} clients={data.clients || []} reservations={data.resv || []}
           onClose={() => setSheet(null)}
           onGoLink={(x) => { setSheet(null); goLink(x); }}
           onDelete={sheet.id

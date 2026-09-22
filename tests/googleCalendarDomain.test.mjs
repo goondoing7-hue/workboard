@@ -1,12 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { externalReservation, externalReservationTitle, mergeGoogleCalendar, parseGoogleCalendarId, reservationLastDate } from "../src/googleCalendarDomain.mjs";
+import { externalReservation, externalReservationTitle, mergeGoogleCalendar, parseGoogleCalendarId, reservationLastDate, scheduleReservationTitle } from "../src/googleCalendarDomain.mjs";
 
 const ID = "sample@group.calendar.google.com";
 const OTHER = "other@group.calendar.google.com";
 const event = (patch = {}) => ({ id: "event-1/20260921T010000Z", title: "상담 A", date: "2026-09-21", start: "10:00", end: "11:00", place: "마음", ...patch });
 const snapshot = (events, patch = {}) => ({ calendarId: ID, name: "상담 캘린더", timeZone: "Asia/Seoul", from: "2026-09-01", to: "2026-10-01", fetchedAt: 100, events, ...patch });
 const local = { id: "local-1", clientId: "client-1", type: "개인상담", date: "2026-09-21", start: "10:00", end: "11:00", status: "scheduled" };
+
+test("schedule labels preserve source names even after client association without adding provider or type", () => {
+  const r = { ...local, source: "google-calendar", externalTitle: "예약 원래 이름" };
+  assert.equal(scheduleReservationTitle(r, { name: "연결한 이름" }), "예약 원래 이름");
+  assert.equal(scheduleReservationTitle(local, { name: "연결한 이름" }), "연결한 이름");
+  assert.equal(scheduleReservationTitle({ ...r, externalTitle: "" }), "상담 일정");
+  assert.equal(r.type, "개인상담");
+  assert.equal(r.externalTitle, "예약 원래 이름");
+});
 
 test("calendar IDs, shared cid, embed src and iCalendar links resolve to one ID", () => {
   assert.equal(parseGoogleCalendarId(` ${ID} `), ID);
