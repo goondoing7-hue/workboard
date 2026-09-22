@@ -2,12 +2,13 @@ import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "re
 import { createPortal } from "react-dom";
 import CounselBoard from "./counseling.jsx";
 import CounselScheduleCard from "./CounselScheduleCard.jsx";
+import { counselingPresentation } from "./counselingPresentation.mjs";
 import { calendarEventsOnDay, isAllDaySpan, layoutAllDayEvents } from "./scheduleLayout.mjs";
 import { useGoogleCalendar, GoogleCalendarButton, GoogleReservationEditor } from "./googleCalendar.jsx";
 import { useCenterCalendar } from "./centerCalendar.jsx";
 import { prepareCenterEvent, deleteCenterEvent, isHiddenCenterEvent } from "./centerCalendarDomain.mjs";
-import { externalReservation, scheduleReservationTitle } from "./googleCalendarDomain.mjs";
-import { mergeReservation, reservationStatus, reservationScheduleChanged, validateReservation } from "./counselingDomain.mjs";
+import { externalReservation } from "./googleCalendarDomain.mjs";
+import { mergeReservation, reservationStatus, reservationScheduleChanged, sessionNumber, validateReservation } from "./counselingDomain.mjs";
 import { documentScheduleOf, documentScheduleError, patchDocumentSchedule, toggleDocument, formatDocumentTime } from "./documentSchedule.mjs";
 import {
   Plus, Check, ChevronRight, ChevronLeft, Trash2, Inbox, Send,
@@ -1474,8 +1475,9 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
   });
   const counselRows = (data.resv || []).filter((r) => reservationStatus(r) === "scheduled").map((r) => {
     const c = (data.clients || []).find((x) => x.id === r.clientId);
-    return { id: r.id, kind: "counsel", text: scheduleReservationTitle(r, c),
-      due: r.date, dueTime: r.start || "", dueEnd: r.end || "", place: r.place || "", pid: "", sName: "",
+    const display = counselingPresentation(r, c);
+    return { id: r.id, kind: "counsel", text: display.title, remote: display.remote, session: c ? sessionNumber(r, data.resv) : null,
+      due: r.date, dueTime: r.start || "", dueEnd: r.end || "", place: display.place, pid: "", sName: "", endDate: r.endDate, allDay: r.allDay,
       pName: "상담", pColor: COUNSEL_COLOR };
   });
   const merged = [...rows.map((r) => ({ ...r, kind: "todo" })), ...planRows, ...counselRows];
@@ -1487,7 +1489,7 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
       d.setDate(d.getDate() + k);
       d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
       const iso = d.toISOString().slice(0, 10);
-      const items = merged.filter((r) => (r.due === iso || (r.kind === "event" && r.due < iso && r.endDate && (iso < r.endDate || (iso === r.endDate && !r.allDay && r.dueEnd && r.dueEnd !== "00:00")))) && !(k === 0 && r.due === iso && !(r.endDate > iso) && isPast(r)))
+      const items = merged.filter((r) => (r.due === iso || ((r.kind === "event" || r.kind === "counsel") && r.due < iso && r.endDate && (iso < r.endDate || (iso === r.endDate && !r.allDay && r.dueEnd && r.dueEnd !== "00:00")))) && !(k === 0 && r.due === iso && !(r.endDate > iso) && isPast(r)))
         .sort((a, b) => (a.dueTime || "99:99").localeCompare(b.dueTime || "99:99"));
       if (!items.length) continue;
       const wd = ["일", "월", "화", "수", "목", "금", "토"][new Date(iso + "T00:00:00").getDay()];
@@ -1649,29 +1651,27 @@ function HomeView({ data, rows, events, onDone, onEditTodo, onOpenSub, onOpenPro
               const ev = r.kind === "event";
               const cs = r.kind === "counsel";
               return (
-                <button key={r.id} onClick={() => (cs ? onGo("counsel") : ev ? onGo("plan") : onOpenSub(r.pid, r.sid))}
+                <button key={`${r.kind}:${r.id}`} data-agenda-kind={r.kind} onClick={() => (cs ? onGo("counsel") : ev ? onGo("plan") : onOpenSub(r.pid, r.sid))}
                   className="wb-btn w-full flex items-start gap-2 text-left"
-                  style={{ background: ev ? "rgba(36,72,107,0.045)" : "none", border: "none",
-                    borderTop: "1px solid " + C.rule, borderRadius: ev ? 8 : 0,
-                    padding: ev ? "7px 8px" : "7px 0", cursor: "pointer" }}>
-                  <span className="shrink-0 rounded" style={{ width: ev ? 5 : 3, height: 15,
+                  style={{ background: "none", border: "none",
+                    borderTop: "1px solid " + C.rule, borderRadius: 0,
+                    padding: "7px 0", cursor: "pointer" }}>
+                  <span className="shrink-0 rounded" style={{ width: 5, height: 15,
                     background: r.pColor, marginTop: 2 }} />
-                  {r.dueTime && (
-                    <span className="shrink-0" style={{ fontSize: 12, fontWeight: 750, color: C.ink,
-                      fontVariantNumeric: "tabular-nums", minWidth: 38 }}>{r.dueTime}</span>
-                  )}
+                  <span className="shrink-0" style={{ fontSize: 12, fontWeight: 750, color: C.ink,
+                    fontVariantNumeric: "tabular-nums", width: 38 }}>{r.dueTime || (r.allDay ? "종일" : "미정")}</span>
                   <span className="flex-1 min-w-0">
-                    <span className="flex items-center gap-1.5">
+                    <span className="flex items-start gap-1.5">
                       <span className="shrink-0 rounded" style={{ fontSize: 8.5, fontWeight: 800, padding: "1px 4px",
                         background: cs ? COUNSEL_SOFT : ev && !r.pid ? CENTER_SOFT : ev ? "rgba(36,72,107,0.12)" : "rgba(26,33,30,0.07)",
                         color: cs ? COUNSEL_COLOR : ev && !r.pid ? CENTER_COLOR : C.muted }}>
                         {cs ? "상담" : ev ? "일정" : "업무"}
                       </span>
-                      <span className="truncate" style={{ fontSize: 12.5, color: C.ink,
-                        fontWeight: ev ? 700 : 400 }}>{r.text}</span>
+                      <span style={{ fontSize: 12.5, color: C.ink, fontWeight: 700, lineHeight: 1.5,
+                        display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", overflowWrap: "anywhere" }}>{r.text}</span>
                     </span>
                     <span className="block truncate" style={{ fontSize: 10, color: C.faint }}>
-                      {cs ? ORG
+                      {cs ? [r.place || "장소 미정", r.session && `${r.session}회기`, r.remote && "예정 · 비대면"].filter(Boolean).join(" · ")
                         : ev ? (r.pName === "센터 일정" ? "센터 일정" : shortName(r.pName) + " 일정") + (r.place ? " · " + r.place : "")
                         : shortName(r.pName) + " · " + r.sName}
                     </span>
@@ -2878,6 +2878,7 @@ const ageOf = (birth) => {
 /* ── 상담일지 ── */
 function LogSheet({ resv, client, session, onSave, onClose }) {
   const dismiss = useDismiss(onClose);
+  const display = counselingPresentation(resv, client);
   const [text, setText] = useState((resv.log && resv.log.text) || "");
   const [files, setFiles] = useState((resv.log && resv.log.files) || []);
   const [name, setName] = useState("");
@@ -2902,10 +2903,11 @@ function LogSheet({ resv, client, session, onSave, onClose }) {
           <div>
             <Label>상담일지</Label>
             <div style={{ fontSize: 15, fontWeight: 750, marginTop: 3 }}>
-              {session}회기 · {client ? client.name : ""}
+              {session && session !== "—" ? `${session}회기 · ` : ""}{display.name || display.title}
             </div>
             <div style={{ fontSize: 11.5, color: C.faint, marginTop: 2 }}>
-              {fmtDateK(resv.date)} {resv.start}{resv.end ? "–" + resv.end : ""} · {resv.type}
+              {fmtDateK(resv.date)} {resv.start}{resv.end ? "–" + resv.end : ""}
+              {[display.place, display.remote && "비대면", resv.type !== "개인상담" && resv.type].filter(Boolean).map((part) => ` · ${part}`).join("")}
             </div>
           </div>
           <button onClick={onClose} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>
@@ -3253,10 +3255,11 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
     })),
     ...(data.resv || []).filter((r) => !["cancelled", "noshow"].includes(reservationStatus(r))).map((r) => {
       const c = (data.clients || []).find((x) => x.id === r.clientId);
-      return { id: r.id, kind: "counsel", title: scheduleReservationTitle(r, c),
+      const display = counselingPresentation(r, c);
+      return { id: r.id, kind: "counsel", title: display.title, remote: display.remote, session: c ? sessionNumber(r, data.resv) : null,
         date: r.date, start: r.start || "", end: r.end || "", pid: "", sid: "",
         readOnly: externalReservation(r), endDate: r.endDate, allDay: r.allDay,
-        place: r.place || "", memo: r.memo, clientId: r.clientId, rtype: r.type, done: reservationStatus(r) === "done",
+        place: display.place, memo: r.memo, clientId: r.clientId, rtype: r.type, done: reservationStatus(r) === "done",
         color: COUNSEL_COLOR, hl: COUNSEL_SOFT };
     }),
   // 기존 보수교육 일정은 데이터를 유지하고 센터 일정 필터로 함께 표시합니다.
@@ -3401,7 +3404,7 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
     const hideHere = moving && drag.date !== iso;
     if (hideHere) return null;
     return (
-      <div className="rounded-lg"
+      <div className="rounded-lg" data-schedule-block={x.id} data-compact={!!compact}
         onPointerDown={(e) => beginMove(e, x, e.currentTarget.closest("[data-daycol]"))}
         onClick={(ev) => {
           ev.stopPropagation();
@@ -3416,19 +3419,19 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
           opacity: moving ? 0.85 : 1,
           boxShadow: moving ? "0 6px 16px rgba(26,33,30,0.18)" : "0 1px 2px rgba(26,33,30,0.06)",
           zIndex: moving ? 8 : 2 }}>
-        <div style={{ padding: compact ? "2px 4px" : "3px 7px" }}>
+        <div style={{ padding: compact ? "2px 3px" : "3px 7px" }}>
           <div className="flex items-baseline gap-1.5 min-w-0">
             <span style={{ fontSize: compact ? 8.5 : 10, fontWeight: 800, color: C.muted,
               fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
               {showStart}{showEnd ? "–" + showEnd : ""}
             </span>
-            {!compact && (x.sName || x.place) && (
-              <span className="truncate" style={{ fontSize: 9.5, fontWeight: 400, color: C.faint }}>
-                {x.sName || x.place}
+            {!compact && (x.sName || x.place || x.session) && (
+              <span className="truncate" style={{ fontSize: 9.5, fontWeight: 400, color: C.muted }}>
+                {[x.sName || x.place, x.session && `${x.session}회기`].filter(Boolean).join(" · ")}
               </span>
             )}
           </div>
-          <div className="flex items-center gap-1">
+          <div className={compact ? "" : "flex items-start gap-1"}>
             {!compact && (
               <button onClick={(ev) => { ev.stopPropagation(); goLink(x); }}
                 title="해당 화면으로 이동"
@@ -3440,8 +3443,15 @@ function PlanView({ data, rows, events, onOpenSub, onOpenProject, onGoCounsel, h
                 {x.pid === EDU ? "교육" : x.kind === "event" ? "일정" : x.kind === "counsel" ? "상담" : "업무"}
               </button>
             )}
-            <span className="truncate" style={{ fontSize: compact ? 9.5 : 12, fontWeight: 650,
-              color: x.done ? C.faint : C.ink, textDecoration: x.done ? "line-through" : "none" }}>{x.title}</span>
+            <span title={[x.title, x.place, x.remote && "비대면"].filter(Boolean).join(" · ")}
+              style={{ fontSize: compact ? 10 : 12, fontWeight: 700, lineHeight: 1.35,
+                display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", overflowWrap: "anywhere",
+                color: x.done ? C.faint : C.ink, textDecoration: x.done ? "line-through" : "none" }}>
+              {x.title}{compact && x.place ? ` · ${x.place}` : ""}{compact && x.remote ? " · 비대면" : ""}
+            </span>
+            {!compact && x.kind === "counsel" && x.remote && <span className="shrink-0" style={{ fontSize: 9, color: COUNSEL_COLOR, fontWeight: 650 }}>
+              {x.done ? "완료" : "예정"} · 비대면
+            </span>}
           </div>
 
         </div>

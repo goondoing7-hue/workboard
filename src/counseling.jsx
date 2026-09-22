@@ -2,8 +2,10 @@ import React, { createContext, useContext, useEffect, useRef, useState } from "r
 import { Plus, X, Check, Pencil, ChevronLeft, ChevronRight, CalendarDays, Users, Search, MapPin } from "lucide-react";
 import { CLIENT_STATUSES, RESERVATION_STATUSES, clientStatus, reservationStatus,
   validateReservation, reservationScheduleChanged, addMinutes, sessionNumber } from "./counselingDomain.mjs";
-import { externalReservation, externalReservationTitle, reservationLastDate } from "./googleCalendarDomain.mjs";
+import { externalReservation, reservationLastDate } from "./googleCalendarDomain.mjs";
 import { GoogleReservationEditor } from "./googleCalendar.jsx";
+import { counselingPresentation } from "./counselingPresentation.mjs";
+import CounselScheduleCard from "./CounselScheduleCard.jsx";
 
 // 기존 업무보드의 색과 공용 UI를 함께 사용합니다. 데이터는 WorkBoard에 그대로 둡니다.
 const UI = createContext(null);
@@ -180,25 +182,27 @@ function ReservationEditor({ initial, clients, reservations, types, onAddType, o
   </Modal>;
 }
 
-function ReservationRow({ reservation: r, clients, reservations, onEdit, onLog, onDone, onNext }) {
+function ReservationRow({ reservation: r, clients, reservations, onEdit, onLog, onDone, onNext, onClient }) {
   const { C, fmtDateK } = useUI();
   const client = clients.find((c) => c.id === r.clientId);
   const status = reservationStatus(r);
   const external = externalReservation(r);
-  const seq = sessionNumber(r, reservations);
+  const presentation = counselingPresentation(r, client);
+  const seq = client ? sessionNumber(r, reservations) : null;
+  const completed = client ? reservations.filter((item) => item.clientId === client.id && item.type === r.type && reservationStatus(item) === "done").length : 0;
+  const displayName = presentation.name || presentation.title;
   const tone = status === "done" ? "green" : status === "scheduled" ? "navy" : "neutral";
   return <div style={{ padding: "11px 0", borderTop: `1px solid ${C.rule}` }}>
     <div className="flex items-start gap-2">
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5 flex-wrap"><span style={{ fontSize: 13.5, fontWeight: 750 }}>{client?.name || (external ? externalReservationTitle(r) : "삭제된 내담자")}</span><Badge tone={tone}>{RESERVATION_STATUSES[status]}</Badge>{external && <Badge tone="green">구글</Badge>}<span style={{ fontSize: 10.5, color: C.faint }}>{r.type}{seq ? ` · ${seq}회기` : ""}</span></div>
+        <div className="flex items-center gap-1.5 flex-wrap"><button type="button" aria-label={`${displayName} 내담자 정보`} onClick={() => onClient(r)} className="wb-btn text-left" style={{ fontSize: 13.5, fontWeight: 750, color: C.ink, border: "none", background: "none", padding: 0, lineHeight: 1.6, overflowWrap: "anywhere", cursor: "pointer" }}>{displayName}</button><Badge tone={tone}>{RESERVATION_STATUSES[status]}</Badge>{presentation.remote && <Badge tone="green">비대면</Badge>}{r.type && r.type !== "개인상담" && <span style={{ fontSize: 10.5, color: C.faint }}>{r.type}</span>}{client && <span style={{ fontSize: 10.5, color: C.muted }}>{seq ? `${seq}회기 · ` : ""}완료 {completed}회</span>}</div>
         {external && !client && <div style={{ fontSize: 10.5, color: C.amber, marginTop: 4 }}>내담자 연결 필요</div>}
-        {external && client && <div className="truncate" style={{ fontSize: 10.5, color: C.muted, marginTop: 4 }}>{externalReservationTitle(r)}</div>}
         <div style={{ marginTop: 5, color: C.ink, fontSize: 12, fontVariantNumeric: "tabular-nums" }}>{fmtDateK(r.date)}{reservationLastDate(r) > r.date ? ` ~ ${fmtDateK(reservationLastDate(r))}` : ""} <span style={{ fontWeight: 650 }}>{r.allDay ? "종일" : r.start ? `${r.start}${r.end ? "–" + r.end : ""}` : "시간 미정"}</span></div>
-        {(r.place || r.method) && <div className="flex items-center gap-1 mt-1" style={{ fontSize: 10.5, color: C.faint }}><MapPin size={10} />{[r.place, r.method].filter(Boolean).join(" · ")}</div>}
+        {(presentation.place || (!presentation.remote && r.method)) && <div className="flex items-center gap-1 mt-1" style={{ fontSize: 10.5, color: C.muted }}><MapPin size={10} />{[presentation.place, !presentation.remote && r.method].filter(Boolean).join(" · ")}</div>}
         {r.memo && <div className="truncate mt-1" style={{ fontSize: 11, color: C.faint }}>{r.memo}</div>}
-        {!external && r.googleWrite && <div style={{ fontSize: 10.5, color: r.googleWrite.state === "error" ? C.seal : C.muted, marginTop: 4 }}>{r.googleWrite.state === "sending" ? "구글 등록 확인 중" : r.googleWrite.state === "error" ? "구글 등록 확인 필요 · 상단 권한 설정에서 다시 전송" : "구글 등록 대기 · 권한 연결 후 전송"}</div>}
+        {!external && r.googleWrite && <div style={{ fontSize: 10.5, color: r.googleWrite.state === "error" ? C.seal : C.muted, marginTop: 4 }}>{r.googleWrite.state === "sending" ? "캘린더 등록 확인 중" : r.googleWrite.state === "error" ? "캘린더 등록 확인 필요 · 상단 권한 설정에서 다시 전송" : "캘린더 등록 대기 · 권한 연결 후 전송"}</div>}
       </div>
-      <button type="button" aria-label={`${client?.name || (external ? externalReservationTitle(r) : "상담")} 예약 수정`} title={external ? "예약 확인 · 내담자 연결" : "예약 수정"} onClick={() => onEdit(r)} className="wb-btn flex items-center justify-center" style={{ width: 40, height: 40, border: "none", background: "none", color: C.faint, cursor: "pointer" }}><Pencil size={14} /></button>
+      <button type="button" aria-label={`${displayName} 예약 수정`} title={external ? "예약 확인 · 내담자 연결" : "예약 수정"} onClick={() => onEdit(r)} className="wb-btn flex items-center justify-center" style={{ width: 40, height: 40, border: "none", background: "none", color: C.faint, cursor: "pointer" }}><Pencil size={14} /></button>
     </div>
     <div className="flex justify-end items-center gap-2 mt-2">
       {status === "scheduled" && <button type="button" onClick={() => onDone(r)} className="wb-btn inline-flex items-center gap-1 rounded-lg" style={{ border: `1px solid ${C.rule}`, background: C.surface, color: C.green, fontSize: 11, fontWeight: 700, minHeight: 34, padding: "6px 9px", cursor: "pointer" }}><Check size={12} />상담 완료</button>}
@@ -218,6 +222,7 @@ function CounselContent({ data, onSaveClient, onDeleteClient, onSaveResv, onDele
   const [clientEditor, setClientEditor] = useState(null);
   const [reservationEditor, setReservationEditor] = useState(null);
   const [pendingReservation, setPendingReservation] = useState(null);
+  const [clientInfoId, setClientInfoId] = useState(null);
   const [logId, setLogId] = useState(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -230,17 +235,29 @@ function CounselContent({ data, onSaveClient, onDeleteClient, onSaveResv, onDele
   const history = reservations.filter((r) => reservationStatus(r) !== "scheduled" || reservationLastDate(r) < todayISO()).sort((a, b) => sortSessions(b, a));
   const filtered = clients.filter((c) => matchesClient(c, query) && (statusFilter === "all" || clientStatus(c) === statusFilter));
   const log = reservations.find((r) => r.id === logId);
+  const clientInfoReservation = reservations.find((r) => r.id === clientInfoId);
+  const clientInfo = clientInfoReservation ? counselingPresentation(clientInfoReservation) : null;
   const editReservation = (r) => setReservationEditor({ ...r, lockClient: true });
+  const showClient = (r) => {
+    if (clients.some((client) => client.id === r.clientId)) setOpenId(r.clientId);
+    else setClientInfoId(r.id);
+  };
   const nextReservation = (r) => {
     const date = new Date(`${r.date || todayISO()}T12:00:00`); date.setDate(date.getDate() + 7);
     const nextDate = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-    setReservationEditor({ clientId: r.clientId, lockClient: true, type: r.type, date: nextDate < todayISO() ? todayISO() : nextDate, start: r.start, end: r.end, place: r.place || "", method: r.method || "대면" });
+    const presentation = counselingPresentation(r, clients.find((client) => client.id === r.clientId));
+    setReservationEditor({ clientId: r.clientId, lockClient: true, type: r.type, date: nextDate < todayISO() ? todayISO() : nextDate, start: r.start, end: r.end, place: presentation.place, method: presentation.remote ? (["전화", "온라인", "비대면"].includes(r.method) ? r.method : "비대면") : r.method || "대면" });
   };
   const complete = (r) => { if (onSaveResv({ id: r.id, status: "done" }) !== false) setUndo({ id: r.id, status: reservationStatus(r) }); };
-  const row = (r) => <ReservationRow key={r.id} reservation={r} clients={clients} reservations={reservations} onEdit={editReservation} onLog={(r2) => setLogId(r2.id)} onDone={complete} onNext={nextReservation} />;
+  const row = (r) => <ReservationRow key={r.id} reservation={r} clients={clients} reservations={reservations} onEdit={editReservation} onLog={(r2) => setLogId(r2.id)} onDone={complete} onNext={nextReservation} onClient={showClient} />;
   const saveClient = (client, reserve) => {
-    onSaveClient(client); setClientEditor(null);
-    if (pendingReservation) { setReservationEditor({ ...pendingReservation, clientId: client.id, type: pendingReservation.type || client.defaultType }); setPendingReservation(null); }
+    if (onSaveClient(client) === false) return;
+    setClientEditor(null);
+    if (pendingReservation) {
+      setReservationEditor({ ...pendingReservation, clientId: client.id, type: pendingReservation.type || client.defaultType,
+        ...(externalReservation(pendingReservation) ? { preselectedClientId: client.id, openLinking: true } : {}) });
+      setPendingReservation(null);
+    }
     else if (reserve) { setOpenId(client.id); setReservationEditor({ clientId: client.id, lockClient: true }); }
   };
   const closeClientEditor = () => { setClientEditor(null); if (pendingReservation) { setReservationEditor(pendingReservation); setPendingReservation(null); } };
@@ -278,9 +295,17 @@ function CounselContent({ data, onSaveClient, onDeleteClient, onSaveResv, onDele
       {!!history.length && <Card style={{ padding: "12px 15px" }}><button type="button" aria-expanded={historyOpen} onClick={() => setHistoryOpen(!historyOpen)} className="wb-btn flex items-center justify-between w-full" style={{ color: C.muted, background: "none", border: "none", padding: "4px 0", cursor: "pointer" }}><Label>지난 상담 · 완료 및 취소 {history.length}</Label><ChevronRight size={14} style={{ transform: historyOpen ? "rotate(90deg)" : "none" }} /></button>{historyOpen && history.map(row)}</Card>}
     </>}
     {undo && <div role="status" className="flex items-center justify-between rounded-xl" style={{ background: C.greenSoft, color: C.green, padding: "10px 13px", fontSize: 12 }}>상담을 완료했습니다.<button type="button" onClick={() => { if (reservations.some((r) => r.id === undo.id && reservationStatus(r) === "done")) onSaveResv(undo); setUndo(null); }} style={{ border: "none", background: "none", color: C.green, fontWeight: 700, cursor: "pointer" }}>되돌리기</button></div>}
+    {clientInfoReservation && <Modal title={`${clientInfo.name || clientInfo.title} 내담자 정보`} onClose={() => setClientInfoId(null)} footer={<Btn size="sm" onClick={() => setClientInfoId(null)}>닫기</Btn>}>
+      <CounselScheduleCard ui={ui} reservation={clientInfoReservation} clients={clients} reservations={reservations} />
+      <div style={{ margin: "13px 0", color: C.muted, fontSize: 12, lineHeight: 1.7 }}>아직 내담자 정보가 연결되지 않았습니다. 기존 내담자를 선택하거나 새로 등록하면 상담 회기와 완료 기록을 함께 볼 수 있습니다.</div>
+      <div className="flex gap-2 flex-wrap">
+        <Btn size="sm" onClick={() => { setReservationEditor({ ...clientInfoReservation, openLinking: true }); setClientInfoId(null); }}>기존 내담자 연결</Btn>
+        <Btn size="sm" kind="solid" icon={Plus} onClick={() => { setPendingReservation(clientInfoReservation); setClientEditor({ name: clientInfo.name || "", defaultType: clientInfoReservation.type || types[0] }); setClientInfoId(null); }}>새 내담자 등록</Btn>
+      </div>
+    </Modal>}
     {clientEditor && <ClientEditor key={clientEditor.id || "new"} initial={clientEditor} clients={clients} types={types} fromReservation={!!pendingReservation} onClose={closeClientEditor} onSave={saveClient} onDelete={clientEditor.id ? () => { if (onDeleteClient(clientEditor.id) !== false) { setClientEditor(null); setOpenId(null); } } : null} />}
     {reservationEditor && (externalReservation(reservationEditor)
-      ? <GoogleReservationEditor ui={ui} reservation={reservations.find((r) => r.id === reservationEditor.id) || reservationEditor} clients={clients} reservations={reservations} types={types} onSave={onSaveResv} onClose={() => setReservationEditor(null)} />
+      ? <GoogleReservationEditor ui={ui} reservation={{ ...(reservations.find((r) => r.id === reservationEditor.id) || reservationEditor), ...(reservationEditor.preselectedClientId ? { clientId: reservationEditor.preselectedClientId } : {}) }} clients={clients} reservations={reservations} types={types} linking={!!reservationEditor.openLinking} onSave={onSaveResv} onClose={() => setReservationEditor(null)} />
       : <ReservationEditor autoCalendar={data.googleCalendar?.enabled && data.googleCalendar?.writeEnabled} key={reservationEditor.id || reservationEditor.clientId || "new"} initial={reservationEditor} clients={clients} reservations={reservations} types={types} onAddType={onAddType} onClose={() => setReservationEditor(null)} onSave={(value) => { if (onSaveResv(value) !== false) { setReservationEditor(null); setUndo(null); } }} onDelete={reservationEditor.id ? () => { if (onDeleteResv(reservationEditor.id) !== false) { setReservationEditor(null); setUndo(null); } } : null} onNewClient={(draft) => { setPendingReservation(draft); setReservationEditor(null); setClientEditor({}); }} />)}
     {log && <LogSheet resv={log} client={clients.find((c) => c.id === log.clientId)} session={sessionNumber(log, reservations) || "—"} onClose={() => setLogId(null)} onSave={(value) => { onSaveLog(log.id, value); setLogId(null); }} />}
   </div>;

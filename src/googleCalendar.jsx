@@ -160,7 +160,7 @@ export function GoogleCalendarPanel({ ui, connection }) {
   </Card>;
 }
 
-export function GoogleReservationEditor({ ui, reservation, clients, reservations = [], types, onSave, onClose }) {
+export function GoogleReservationEditor({ ui, reservation, clients, reservations = [], types, onSave, onClose, linking = false }) {
   const { C, Btn, FONT, useDismiss } = ui;
   const dismiss = useDismiss(onClose);
   const [clientId, setClientId] = useState(reservation.clientId || "");
@@ -176,7 +176,7 @@ export function GoogleReservationEditor({ ui, reservation, clients, reservations
     }} className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet" style={{ maxWidth: 470, maxHeight: "90dvh", overflowY: "auto", background: C.bg, padding: 18 }}>
       <div className="flex justify-end"><button type="button" aria-label="닫기" onClick={onClose} style={{ border: "none", background: "none", color: C.muted, width: 36, height: 36, cursor: "pointer" }}><X size={18} /></button></div>
       <div style={{ marginBottom: 15 }}><CounselScheduleCard ui={ui} reservation={{ ...reservation, clientId, type }} clients={clients} reservations={reservations} titleId={titleId} /></div>
-      <details style={{ border: `1px solid ${C.rule}`, borderRadius: 10, padding: "10px 12px", background: C.surface }}>
+      <details open={linking || undefined} style={{ border: `1px solid ${C.rule}`, borderRadius: 10, padding: "10px 12px", background: C.surface }}>
       <summary style={{ color: C.muted, fontSize: 12, fontWeight: 650, cursor: "pointer" }}>내담자 연결·분류 수정</summary>
       <div style={{ marginTop: 12 }}>
       <label style={{ fontSize: 11.5, fontWeight: 700, color: C.muted }}>내담자 연결<select aria-label="내담자 연결" value={clientId} onChange={(e) => setClientId(e.target.value)} style={{ ...inp, marginTop: 5 }}><option value="">연결하지 않음</option>{clients.map((c) => <option key={c.id} value={c.id}>{c.name}{c.birth ? ` · ${c.birth}` : ""}</option>)}</select></label>

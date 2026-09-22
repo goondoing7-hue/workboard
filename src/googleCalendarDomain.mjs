@@ -1,4 +1,5 @@
 import { reservationStatus } from "./counselingDomain.mjs";
+import { counselingPresentation } from "./counselingPresentation.mjs";
 
 const SOURCE = "google-calendar";
 const CALENDAR_HOSTS = new Set(["calendar.google.com", "www.google.com"]);
@@ -59,10 +60,9 @@ export function externalReservationTitle(reservation) {
   return externalReservation(reservation) ? text(reservation.externalTitle) || "상담 일정" : "";
 }
 
-/** Calendar labels keep the source title without adding provider or type labels. */
+/** Shared display label; the original calendar title remains stored intact. */
 export function scheduleReservationTitle(reservation, client) {
-  return externalReservation(reservation) ? externalReservationTitle(reservation)
-    : text(client?.name) || text(reservation?.title) || "상담 일정";
+  return counselingPresentation(reservation, client).title;
 }
 
 /** Last occupied calendar date, respecting an exclusive all-day/midnight end. */
