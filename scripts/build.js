@@ -110,7 +110,7 @@ fs.writeFileSync(path.join(dist, "performance.html"), `<!DOCTYPE html>
 <meta name="referrer" content="strict-origin-when-cross-origin" />
 <title>상담 실적 관리</title>
 <link rel="icon" href="icon-192.png" />
-<style>${fs.readFileSync(R("src/performance.css"), "utf8")}\n${fs.readFileSync(R("src/performanceMilitary.css"), "utf8")}</style></head>
+<style>${fs.readFileSync(R("src/performance.css"), "utf8")}\n${fs.readFileSync(R("src/performanceMilitary.css"), "utf8")}\n${fs.readFileSync(R("src/performanceApprovals.css"), "utf8")}\n${fs.readFileSync(R("src/performanceSchedule.css"), "utf8")}</style></head>
 <body><div id="root"></div><noscript>실적을 관리하려면 JavaScript를 허용해 주세요.</noscript><script>${performanceJs}</script><script>
 if ('serviceWorker' in navigator && !['localhost','127.0.0.1'].includes(location.hostname)) window.addEventListener('load', function(){ navigator.serviceWorker.register('/sw.js').catch(function(){}); });
 </script></body></html>`);

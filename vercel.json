@@ -3,6 +3,9 @@
   "outputDirectory": "dist",
   "framework": null,
   "functions": {
+    "api/performance-calendar.js": {
+      "includeFiles": "server/performanceCalendar.cjs"
+    },
     "api/performance-sheets.js": {
       "includeFiles": "server/performanceSheets.cjs"
     },

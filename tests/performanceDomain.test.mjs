@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeRecord, validateRecord, validateEvent, validateProfile, mergeEvents, recordsFor, summarize,
+  normalizeApproval, validateApproval, normalizeSupervisor, validateSupervisor, resetChangedApproval, scheduleCompletionEvents,
 } from '../src/performanceDomain.mjs';
+import { normalizeSchedule } from '../src/performanceScheduleDomain.mjs';
 import {
   EVENT_PREFIX, QUARANTINE_PREFIX, readLocalEvents, writeLocalEvents, quarantineCorruptEvents, parseBackup, backupText,
 } from '../src/performancePersistence.mjs';
@@ -18,6 +20,10 @@ class MemoryStorage {
   removeItem(key) { this.map.delete(key); }
 }
 const archives = storage => [...storage.map].filter(([key]) => key.startsWith(QUARANTINE_PREFIX)).map(([, value]) => JSON.parse(value));
+const approval = (patch = {}) => normalizeApproval({ id: 'approval-1', target: 'kcp', itemId: 'kcp-individual-counseling', date: '2026-09-23', title: '사례 A 면접상담', quantities: { cases: 1, sessions: 10 }, ...patch });
+const supervisor = (patch = {}) => normalizeSupervisor({ id: 'supervisor-1', name: '검증용 수퍼바이저', kcp: true, ...patch });
+const schedule = (patch = {}) => normalizeSchedule({ id: 'schedule-1', title: '수련 학술모임', date: '2026-09-23', endDate: '2026-09-23', start: '10:00', end: '12:00', target: 'kca', itemId: 'kca-workshops', format: 'remote', ...patch });
+const entityEvent = (entityType, payload, id, baseRevision = null) => ({ ...event(id), entityType, entityId: payload.id, payload, baseRevision });
 
 test('required UI values are validated before normalization can supply defaults', () => {
   assert.equal(validateRecord(record()), null);
@@ -184,4 +190,122 @@ test('recovery does not delete a record another tab repaired after the corruptio
   assert.deepEqual(quarantineCorruptEvents(storage), { quarantined: 0, skipped: 1 });
   assert.equal(storage.getItem(EVENT_PREFIX + 'bad'), repairedBytes);
   assert.equal(archives(storage)[0].raw, '{damaged');
+});
+
+test('item-level approval validates its own scheme, allowed measures and explicit approval evidence', () => {
+  assert.equal(validateApproval(approval()), null);
+  const approved = approval({ status: 'approved', approver: '확인자', confirmedOn: '2026-09-23', requirementsChecked: true });
+  assert.equal(validateApproval(approved), null);
+  for (const patch of [{ target: 'kca' }, { itemId: 'unknown' }, { quantities: {} }, { quantities: { sessions: 0 } }, { quantities: { sessions: -1 } }, { quantities: { sessions: 1.5 } }, { quantities: { minutes: 10 } }, { requirementsChecked: 'true' }, { confirmedOn: '2026-02-30' }, { sourceRecordId: '../unsafe' }, { evidence: 'javascript:alert(1)' }]) assert.ok(validateApproval({ ...approved, ...patch }), JSON.stringify(patch));
+  for (const patch of [{ approver: '' }, { confirmedOn: '' }, { requirementsChecked: false }]) assert.ok(validateApproval({ ...approved, ...patch }));
+  assert.equal(validateApproval({ ...approval(), quantities: { cases: '0', sessions: '2' } }), null);
+  assert.ok(validateApproval({ ...approval(), quantities: { cases: '0', sessions: '2' } }, { stored: true }));
+  assert.ok(validateEvent(entityEvent('approval', { ...approval(), _sourceReview: false }, 'bad-derived')));
+});
+
+test('legacy approvals never become item approvals and missing supervisor IDs remain compatible', () => {
+  const legacy = record({ supervisor: '이전 이름', recognition: { center: { status: 'approved', confirmedOn: '2026-09-23', approver: '센터' } } });
+  delete legacy.supervisorId;
+  const state = recordsFor([event('legacy', {}, legacy)]);
+  assert.equal(state.records[0].supervisor, '이전 이름');
+  assert.equal(state.records[0].supervisorId, '');
+  assert.deepEqual(state.approvalEntries, []);
+  assert.deepEqual(state.supervisors, []);
+  assert.equal(summarize(state.records, { target: 'kca' }).sessions, 1);
+});
+
+test('item approvals and supervisor snapshots round-trip through immutable backups without retroactive name changes', () => {
+  const first = entityEvent('supervisor', supervisor(), 'sv-first');
+  const nameChange = entityEvent('supervisor', supervisor({ name: '변경된 이름', active: false }), 'sv-updated', first.id);
+  const approved = entityEvent('approval', approval({ supervisorId: first.entityId, supervisorName: first.payload.name }), 'approval-first');
+  const storage = new MemoryStorage();
+  writeLocalEvents(storage, parseBackup(backupText([first, approved, nameChange])));
+  writeLocalEvents(storage, [approved]);
+  const state = recordsFor(readLocalEvents(storage));
+  assert.equal(state.approvalEntries.length, 1);
+  assert.equal(state.approvalEntries[0].supervisorName, first.payload.name);
+  assert.equal(state.supervisors[0].name, '변경된 이름');
+  assert.equal(state.supervisors[0].active, false);
+  assert.equal(validateSupervisor(supervisor()), null);
+  for (const patch of [{ name: '' }, { kcp: 'true' }, { active: null }, { qualification: 'x'.repeat(501) }]) assert.ok(validateSupervisor({ ...supervisor(), ...patch }));
+});
+
+test('item approval changes reset only substantive approved details and preserve memo and proof edits', () => {
+  const original = approval({ status: 'approved', approver: '수퍼바이저', confirmedOn: '2026-09-23', requirementsChecked: true });
+  for (const patch of [{ quantities: { cases: 1, sessions: 11 } }, { caseCode: 'C-2' }, { date: '2026-09-24' }, { format: 'remote' }, { sourceRecordId: 'record-2' }, { supervisorName: '다른 수퍼바이저' }, { itemId: 'different' }, { target: 'kca' }]) {
+    const changed = resetChangedApproval(original, { ...original, ...patch });
+    assert.equal(changed.status, 'requested'); assert.equal(changed.confirmedOn, ''); assert.equal(changed.requirementsChecked, false);
+  }
+  assert.equal(resetChangedApproval(original, { ...original, note: '설명', evidence: 'https://example.org/proof', title: '제목 정리' }).status, 'approved');
+  assert.equal(resetChangedApproval({ ...original, _sourceReview: true }, { ...original }).status, 'requested');
+});
+
+test('linked activity revisions and deletions require rechecking approval without losing its history', () => {
+  const source = event('source-first');
+  const linked = entityEvent('approval', approval({ sourceRecordId: source.entityId, sourceRevision: source.id }), 'linked');
+  assert.equal(recordsFor([source, linked]).approvalEntries[0]._sourceReview, false);
+  const changed = event('source-changed', { baseRevision: source.id }, record({ minutes: 100 }));
+  assert.equal(recordsFor([source, changed, linked]).approvalEntries[0]._sourceReview, true);
+  const deleted = { ...event('source-deleted', { baseRevision: source.id }), payload: { deleted: true } };
+  assert.equal(recordsFor([source, deleted, linked]).approvalEntries[0]._sourceReview, true);
+  assert.equal(recordsFor([linked]).approvalEntries[0]._sourceReview, true);
+});
+
+test('approval and supervisor conflicts support explicit resolution and deletion tombstones', () => {
+  for (const [type, make] of [['approval', approval], ['supervisor', supervisor]]) {
+    const first = entityEvent(type, make(), `${type}-first`);
+    const left = entityEvent(type, make({ note: 'left' }), `${type}-left`, first.id);
+    const right = entityEvent(type, make({ note: 'right' }), `${type}-right`, first.id);
+    const key = type === 'approval' ? 'approvalEntries' : 'supervisors';
+    const conflicted = recordsFor([first, left, right]);
+    assert.equal(conflicted[key][0]._conflict, true);
+    assert.equal(conflicted.conflicts[0].entityType, type);
+    const resolved = { ...entityEvent(type, make({ note: 'resolved' }), `${type}-resolved`, right.id), payload: { ...make({ note: 'resolved' }), _resolves: [left.id, right.id] } };
+    assert.equal(recordsFor([first, left, right, resolved]).conflicts.length, 0);
+    const deleted = { ...entityEvent(type, make(), `${type}-deleted`, resolved.id), payload: { deleted: true } };
+    assert.equal(recordsFor([first, left, right, resolved, deleted])[key].length, 0);
+  }
+});
+
+test('scheduled training converts once into performed activity and a pending item approval', () => {
+  const first = entityEvent('schedule', schedule(), 'schedule-first');
+  const result = scheduleCompletionEvents([first], first.entityId, { actualMinutes: 100, quantities: { minutes: 90 }, sessions: 1, participants: 1 });
+  assert.equal(result.events.length, 3);
+  const state = recordsFor([first, ...result.events]);
+  assert.equal(state.records.length, 1); assert.equal(state.records[0].activity, 'training'); assert.equal(state.records[0].minutes, 100); assert.equal(state.records[0].format, 'remote');
+  assert.deepEqual(state.records[0].targets, { kcp: false, kca: true, military: false });
+  assert.equal(state.approvalEntries[0].quantities.minutes, 90);
+  assert.equal(state.approvalEntries[0].status, 'pending'); assert.equal(state.approvalEntries[0].requirementsChecked, false);
+  assert.equal(state.approvalEntries[0]._sourceReview, false);
+  assert.equal(state.schedules[0].status, 'done'); assert.equal(state.schedules[0].recordId, result.recordId);
+  const repeat = scheduleCompletionEvents([first, ...result.events], first.entityId);
+  assert.equal(repeat.alreadyCompleted, true); assert.deepEqual(repeat.events, []);
+  assert.equal(summarize(state.records, { target: 'kca' }).minutes, 0);
+});
+
+test('schedule completion retries a partial local batch without duplicating records or approvals', () => {
+  const first = entityEvent('schedule', schedule(), 'schedule-first');
+  const options = { actualMinutes: 100, quantities: { minutes: 100 } };
+  const started = scheduleCompletionEvents([first], first.entityId, options);
+  for (const prefix of [started.events.slice(0, 1), started.events.slice(0, 2)]) {
+    const retry = scheduleCompletionEvents([first, ...prefix], first.entityId, options);
+    const state = recordsFor(parseBackup(backupText([first, ...prefix, ...retry.events])));
+    assert.equal(state.records.length, 1); assert.equal(state.approvalEntries.length, 1); assert.equal(state.conflicts.length, 0);
+    assert.equal(state.approvalEntries[0].sourceRevision, state.records[0]._revision);
+    assert.equal(state.schedules[0].recordId, state.records[0].id);
+    assert.equal(summarize(state.records).minutes, 100);
+  }
+});
+
+test('planned or cancelled schedules cannot silently turn missing or invalid quantities into performance', () => {
+  const first = entityEvent('schedule', schedule(), 'schedule-first');
+  for (const options of [{ quantities: { minutes: 100 } }, { actualMinutes: '', quantities: { minutes: 100 } }, { actualMinutes: true, quantities: { minutes: 100 } }, { actualMinutes: 100, quantities: { minutes: 0 } }, { actualMinutes: 100, quantities: { cases: 1 } }, { actualMinutes: 100, quantities: { minutes: true } }]) assert.throws(() => scheduleCompletionEvents([first], first.entityId, options));
+  const cancelled = entityEvent('schedule', schedule({ status: 'cancelled' }), 'cancelled');
+  assert.throws(() => scheduleCompletionEvents([cancelled], cancelled.entityId, { actualMinutes: 100, quantities: { minutes: 100 } }), /취소/);
+  const unclassified = entityEvent('schedule', schedule({ target: '', itemId: '' }), 'unclassified');
+  assert.throws(() => scheduleCompletionEvents([unclassified], unclassified.entityId, { actualMinutes: 100, quantities: { minutes: 100 } }), /인정 대상/);
+  const done = scheduleCompletionEvents([first], first.entityId, { actualMinutes: 100, quantities: { minutes: 100 } });
+  const recordChange = done.events.find(item => item.entityType === 'record');
+  const deleted = { ...recordChange, id: 'deleted-record', baseRevision: recordChange.id, payload: { deleted: true } };
+  assert.throws(() => scheduleCompletionEvents([first, recordChange, deleted], first.entityId, { actualMinutes: 100, quantities: { minutes: 100 } }), /삭제/);
 });

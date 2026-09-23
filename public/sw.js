@@ -1,5 +1,5 @@
 /* 업무보드 — 오프라인 캐시 */
-const CACHE = "workboard-v8";
+const CACHE = "workboard-v9";
 const ASSETS = ["./", "./index.html", "./adhd.html", "./performance.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 const ASSET_URLS = new Set(ASSETS.map((asset) => new URL(asset, self.location.href).href));
 

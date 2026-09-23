@@ -12,6 +12,7 @@ if (fs.existsSync(localEnv)) process.loadEnvFile(localEnv);
 const { handler: googleCalendarHandler } = require("../server/googleCalendar.cjs");
 const { handler: googleCalendarAuthHandler } = require("../server/googleCalendarSession.cjs");
 const { handler: performanceSheetsHandler } = require("../server/performanceSheets.cjs");
+const { handler: performanceCalendarHandler } = require("../server/performanceCalendar.cjs");
 const preview = process.argv.includes("--preview");
 const output = path.join(root, preview ? "dist" : ".dev");
 const port = Number(process.env.PORT || 3000);
@@ -36,6 +37,10 @@ const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; ch
 const server = http.createServer((req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Content-Type-Options", "nosniff");
+  if (new URL(req.url, "http://localhost").pathname === "/api/performance-calendar") {
+    performanceCalendarHandler(req, res);
+    return;
+  }
   if (new URL(req.url, "http://localhost").pathname === "/api/performance-sheets") {
     performanceSheetsHandler(req, res);
     return;

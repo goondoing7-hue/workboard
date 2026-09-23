@@ -231,3 +231,37 @@ test("disconnect clears only this feature's cookies and never deletes or unshare
   assert(response.headers["set-cookie"].every((value) => value.includes("wb_performance_") && value.includes("Max-Age=0")));
   assert.equal(f.state.rows.length, 2); assert.equal(writes(f).length, count);
 });
+
+test("approval items and supervisor registrations retain readable columns and complete legacy-compatible recovery JSON", async () => {
+  const f = fixture(), cookie = await connect(f);
+  const supervisor = event(10, { entityType: "supervisor", entityId: "supervisor-1", payload: { id: "supervisor-1", name: "검증 수퍼바이저", affiliation: "검증 기관", qualification: "상담 자격", kcp: true, kca: true, active: true, note: "" } });
+  const approval = event(11, { entityType: "approval", entityId: "approval-1", payload: { id: "approval-1", target: "kcp", itemId: "kcp-individual-counseling", date: "2026-09-23", title: "사례 A 면접상담", quantities: { cases: 1, sessions: 10 }, status: "approved", supervisorId: "supervisor-1", supervisorName: "검증 수퍼바이저", approver: "검증 수퍼바이저", confirmedOn: "2026-09-23", requirementsChecked: true, caseCode: "C-1" } });
+  const group = event(12, { entityType: "approval", entityId: "approval-2", payload: { id: "approval-2", target: "kca", itemId: "kca-group-member", date: "2026-09-23", title: "집단 참여", quantities: { minutes: 600, groups: 1 }, status: "requested", caseCode: "G-1" } });
+  const items = [event(), supervisor, approval, group];
+  assert.equal((await append(f, cookie, items)).status, 200);
+  assert.equal(f.state.rows.every(row => row.length === 16), true);
+  const supervisorRow = f.state.rows[2], approvalRow = f.state.rows[3], groupRow = f.state.rows[4];
+  assert.match(supervisorRow[7], /수퍼바이저 · 검증 수퍼바이저/);
+  assert.equal(supervisorRow[12], "한국상담학회");
+  assert.match(approvalRow[7], /한국상담심리학회 · kcp-individual-counseling · 사례 A 면접상담 · 1사례/);
+  assert.equal(approvalRow[9], 10); assert.equal(approvalRow[8], "C-1");
+  assert.equal(approvalRow[13], "인정 완료 · 검증 수퍼바이저");
+  assert.match(groupRow[7], /1집단/); assert.equal(groupRow[11], 600); assert.equal(groupRow[12], "확인 요청");
+  assert.deepEqual((await read(f, cookie)).data.events, items);
+  assert.equal((await append(f, cookie, [approval, supervisor])).status, 200);
+  assert.equal(f.state.rows.length, 5);
+  const deleted = event(13, { entityType: "approval", entityId: "approval-1", baseRevision: approval.id, payload: { deleted: true } });
+  assert.equal((await append(f, cookie, [deleted])).status, 200);
+  assert.equal(f.state.rows[5][7], "항목별 승인 삭제 이력");
+  assert.deepEqual((await read(f, cookie)).data.events.at(-1), deleted);
+});
+
+test("training schedules preserve calendar sync metadata and completion links in the unchanged backup schema", async () => {
+  const f = fixture(), cookie = await connect(f);
+  const schedule = event(20, { entityType: "schedule", entityId: "schedule-1", payload: { id: "schedule-1", title: "교육·수련 일정", date: "2026-09-23", endDate: "2026-09-23", start: "10:00", end: "12:00", target: "kca", itemId: "kca-workshops", status: "done", recordId: "training:schedule-1", approvalId: "training-approval:schedule-1", supervisorName: "검증 수퍼바이저", calendar: { calendarId: "dedicated-calendar", eventId: "google-event", etag: '"revision-1"', state: "synced", remote: null } } });
+  assert.equal((await append(f, cookie, [schedule])).status, 200);
+  assert.equal(f.state.rows[1].length, 16); assert.match(f.state.rows[1][7], /수련 일정 · 교육·수련 일정 · kca-workshops/);
+  assert.equal(f.state.rows[1][8], schedule.payload.recordId);
+  assert.deepEqual((await read(f, cookie)).data.events, [schedule]);
+  assert.equal((await append(f, cookie, [schedule])).status, 200); assert.equal(f.state.rows.length, 2);
+});

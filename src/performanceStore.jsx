@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { createEvent, normalizeRecord, validateRecord, recordsFor, mergeEvents, localDate, canonicalJSON } from './performanceDomain.mjs';
+import { createEvent, normalizeRecord, validateRecord, normalizeApproval, validateApproval, normalizeSupervisor, validateSupervisor, resetChangedApproval, scheduleCompletionEvents, recordsFor, mergeEvents, localDate, canonicalJSON } from './performanceDomain.mjs';
 import { EVENT_PREFIX, META_KEY, readLocalEvents, writeLocalEvents, readLocalBackup, writeLocalBackup, parseBackup, backupText, quarantineCorruptEvents } from './performancePersistence.mjs';
 import { reservationStatus } from './counselingDomain.mjs';
+import { normalizeSchedule, validateSchedule } from './performanceScheduleDomain.mjs';
 
 const endpoint = '/api/performance-sheets';
 const download = (text, name, type = 'application/json') => {
@@ -130,7 +131,7 @@ export function usePerformanceStore() {
     return () => { live.current = false; generation.current++; clearTimeout(timer.current); clearInterval(interval); window.removeEventListener('online', wake); window.removeEventListener('focus', wake); window.removeEventListener('storage', storage); document.removeEventListener('visibilitychange', wake); };
   }, []);
   const materialized = useMemo(() => recordsFor(events), [events]);
-  return { ...materialized, storageError, sync,
+  return { ...materialized, storageError, sync, getSnapshot: () => recordsFor(current.current),
     saveRecord: async raw => {
       const inputError = validateRecord(raw); if (inputError) throw new Error(inputError);
       const record = normalizeRecord(raw); record.id ||= crypto.randomUUID(); record.needsReview = false;
@@ -138,7 +139,7 @@ export function usePerformanceStore() {
       const previous = recordsFor(current.current).records.find(r => r.id === record.id);
       const base = record._revision || previous?._revision || '';
       if (previous) {
-        const meaningful = r => Object.fromEntries(['date', 'caseId', 'activity', 'sessions', 'participants', 'minutes', 'institution', 'format', 'status', 'testName', 'testCaseId', 'testCategory', 'groupName', 'groupCategory', 'groupRole', 'participantIds', 'age', 'gender'].map(key => [key, r[key]]));
+        const meaningful = r => Object.fromEntries(['date', 'caseId', 'activity', 'sessions', 'participants', 'minutes', 'institution', 'format', 'status', 'testName', 'testCaseId', 'testCategory', 'groupName', 'groupCategory', 'groupRole', 'participantIds', 'age', 'gender', 'supervisorId', 'supervisor'].map(key => [key, r[key]]));
         if (canonicalJSON(meaningful(previous)) !== canonicalJSON(meaningful(record))) {
           for (const channel of ['center', 'supervisor']) if (previous.recognition[channel].status === 'approved') record.recognition[channel] = { ...record.recognition[channel], status: 'requested', confirmedOn: '' };
         }
@@ -146,9 +147,64 @@ export function usePerformanceStore() {
       delete record._revision;
       await saveEvents([createEvent('record', record.id, record, base)]); return record;
     },
+    saveApproval: async raw => {
+      const state = recordsFor(current.current), previous = state.approvalEntries.find(item => item.id === raw?.id);
+      const input = { ...raw }; delete input._sourceReview; delete input._conflict;
+      const supervisor = state.supervisors.find(item => item.id === input.supervisorId);
+      if (input.supervisorId && (input.supervisorId !== previous?.supervisorId || !input.supervisorName)) {
+        if (!supervisor || supervisor._conflict) throw new Error('선택한 수퍼바이저 정보를 확인해 주세요.');
+        input.supervisorName = supervisor.name;
+      }
+      const source = state.records.find(item => item.id === input.sourceRecordId);
+      input.sourceRevision = input.sourceRecordId ? source?._revision || input.sourceRevision || '' : '';
+      // Validate raw fields first; approval-specific requirements are checked after
+      // changed approved entries are returned to the requested state.
+      const inputError = validateApproval({ ...input, status: input.status === 'approved' ? 'pending' : input.status }); if (inputError) throw new Error(inputError);
+      let approval = normalizeApproval(input); approval.id ||= crypto.randomUUID();
+      approval = resetChangedApproval(previous, approval);
+      if (approval.status === 'approved' && approval.sourceRecordId && (!source || source._conflict || source.needsReview || source.status !== 'done')) throw new Error('연결 활동을 완료·검토한 뒤 항목을 승인해 주세요.');
+      const error = validateApproval(approval); if (error) throw new Error(error);
+      const base = approval._revision || previous?._revision || ''; delete approval._revision;
+      await saveEvents([createEvent('approval', approval.id, approval, base)]); return approval;
+    },
+    removeApproval: async id => { const approval = recordsFor(current.current).approvalEntries.find(item => item.id === id); if (approval) await saveEvents([createEvent('approval', id, { deleted: true }, approval._revision)]); },
+    saveSupervisor: async raw => {
+      const input = { ...raw }; delete input._conflict;
+      const inputError = validateSupervisor(input); if (inputError) throw new Error(inputError);
+      const supervisor = normalizeSupervisor(input); supervisor.id ||= crypto.randomUUID();
+      const previous = recordsFor(current.current).supervisors.find(item => item.id === supervisor.id);
+      const base = supervisor._revision || previous?._revision || ''; delete supervisor._revision;
+      await saveEvents([createEvent('supervisor', supervisor.id, supervisor, base)]); return supervisor;
+    },
+    removeSupervisor: async id => { const supervisor = recordsFor(current.current).supervisors.find(item => item.id === id); if (supervisor) await saveEvents([createEvent('supervisor', id, { deleted: true }, supervisor._revision)]); },
+    saveSchedules: async list => {
+      if (!Array.isArray(list)) throw new Error('저장할 일정 목록을 확인해 주세요.');
+      const state = recordsFor(current.current), changes = [], ids = new Set();
+      for (const raw of list) {
+        const input = { ...raw }; delete input._conflict;
+        const inputError = validateSchedule(input); if (inputError) throw new Error(inputError);
+        const schedule = normalizeSchedule(input); schedule.id ||= crypto.randomUUID();
+        if (ids.has(schedule.id)) throw new Error('같은 일정을 한 번에 중복 저장할 수 없습니다.'); ids.add(schedule.id);
+        const previous = state.schedules.find(item => item.id === schedule.id);
+        const base = schedule._revision || previous?._revision || ''; delete schedule._revision;
+        const old = previous ? normalizeSchedule(previous) : null; if (old) delete old._revision;
+        if (old && canonicalJSON(old) === canonicalJSON(schedule)) continue;
+        changes.push(createEvent('schedule', schedule.id, schedule, base));
+      }
+      if (changes.length) await saveEvents(changes);
+      return changes.map(change => ({ ...change.payload, _revision: change.id }));
+    },
+    removeSchedule: async id => { const schedule = recordsFor(current.current).schedules.find(item => item.id === id); if (schedule) await saveEvents([createEvent('schedule', id, { deleted: true }, schedule._revision)]); },
+    completeSchedule: async (id, options = {}) => {
+      // Read the persisted log again so retrying a partially written batch reuses
+      // the same activity and approval instead of creating duplicate performance.
+      const result = scheduleCompletionEvents(readLocalEvents(localStorage), id, options);
+      if (result.events.length) await saveEvents(result.events);
+      return { recordId: result.recordId, approvalId: result.approvalId, alreadyCompleted: result.alreadyCompleted };
+    },
     saveProfile: async profile => { const base = profile._revision || recordsFor(current.current).profile._revision || ''; const payload = { ...profile }; delete payload._revision; delete payload._conflict; await saveEvents([createEvent('profile', 'profile', payload, base)]); },
     removeRecord: async id => { const record = recordsFor(current.current).records.find(r => r.id === id); if (record) await saveEvents([createEvent('record', id, { deleted: true }, record._revision)]); },
-    resolveConflict: async (entityId, eventId) => { const conflict = recordsFor(current.current).conflicts.find(c => c.entityId === entityId); const selected = conflict?.versions.find(e => e.id === eventId); if (!selected) throw new Error('선택한 변경 기록을 찾을 수 없습니다.'); await saveEvents([createEvent(selected.entityType, entityId, { ...selected.payload, _resolves: conflict.versions.map(e => e.id) }, selected.id)]); },
+    resolveConflict: async (entityId, eventId) => { const conflict = recordsFor(current.current).conflicts.find(c => c.entityId === entityId && c.versions.some(e => e.id === eventId)); const selected = conflict?.versions.find(e => e.id === eventId); if (!selected) throw new Error('선택한 변경 기록을 찾을 수 없습니다.'); await saveEvents([createEvent(selected.entityType, entityId, { ...selected.payload, _resolves: conflict.versions.map(e => e.id) }, selected.id)]); },
     exportBackup: () => {
       if (!ready.current) throw new Error('기기 기록을 읽지 못해 전체 백업을 만들 수 없습니다. 기존 백업 파일로 먼저 복구해 주세요.');
       download(backupText(readLocalEvents(localStorage)), `상담실적_전체백업_${localDate()}.json`);

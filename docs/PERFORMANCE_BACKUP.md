@@ -53,7 +53,7 @@ OAuth 외부 앱이 Testing 상태이면 이 권한의 refresh token은 일반�
 | `POST {action:'append',events,sheetId?}` | 최대 50개 변경. 확인된 `{acceptedIds,sheet}`만 로컬 outbox에서 완료 표시 |
 | `POST {action:'disconnect'}` | 실적 기능 쿠키만 삭제. Google 파일·권한·기록은 유지 |
 
-변경은 `{id,entityId,entityType:'record'|'profile',baseRevision?:string|null,createdAt:UTC_ISO,payload:object}`이며 한 변경은 JSON UTF-8 16,000바이트까지 지원한다. payload는 자유 텍스트 파일 첨부 본문 저장용이 아니다. 자료 파일은 별도 보관하고 증빙 식별 정보를 기록한다. `_resolves`와 삭제 표식을 포함한 payload는 그대로 복구된다.
+변경은 `{id,entityId,entityType:'record'|'profile'|'approval'|'supervisor'|'schedule',baseRevision?:string|null,createdAt:UTC_ISO,payload:object}`이며 한 변경은 JSON UTF-8 16,000바이트까지 지원한다. 항목별 승인, 수퍼바이저 등록, 수련 일정의 연결 ID·전송 대기·실적 전환 정보를 같은 백업에 보존한다. 기존 record/profile 이벤트는 그대로 읽는다. payload는 자유 텍스트 파일 첨부 본문 저장용이 아니다. 자료 파일은 별도 보관하고 증빙 식별 정보를 기록한다. `_resolves`와 삭제 표식을 포함한 payload는 그대로 복구된다.
 
 Google 조회는 응답당 4MiB를 제한한다. 페이지별 복구는 200개로 나누지만 중복 검사 ID 색인이 4MiB를 초과하는 대규모 누적 이력에서는 업로드를 중단하고 대기 기록을 보존한다. 자동으로 오래된 변경을 지우지 않으며 해당 규모가 되면 별도 아카이브/데이터베이스 확장이 필요하다.
 

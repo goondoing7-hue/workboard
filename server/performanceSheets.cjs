@@ -17,8 +17,8 @@ const AAD = Buffer.from("workboard:performance:cookie:v1");
 const FILE_FIELDS = "id,name,mimeType,appProperties,ownedByMe,shared,trashed,webViewLink,capabilities(canEdit)";
 const HEADERS = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store, max-age=0", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
 const COLUMNS = ["변경 ID", "복구 무결성 SHA256", "항목 ID", "항목 종류", "이전 변경 ID", "저장 시각", "활동일", "활동 종류", "사례번호", "횟수", "인원", "분", "센터 인정", "수퍼바이저 인정", "수행 상태", "완전복구 JSON"];
-const ACTIVITIES = { intake: "접수면접", individual: "개인상담", test: "검사실시", interpretation: "해석상담", group: "집단상담", supervision: "슈퍼비전" };
-const STATES = { done: "진행 완료", planned: "예정", cancelled: "취소", pending: "미확인", requested: "확인 요청", approved: "인정 완료" };
+const ACTIVITIES = { intake: "접수면접", individual: "개인상담", test: "검사실시", interpretation: "해석상담", group: "집단상담", supervision: "슈퍼비전", training: "교육·수련" };
+const STATES = { done: "진행 완료", planned: "예정", cancelled: "취소", pending: "미확인", requested: "확인 요청", approved: "인정 완료", rejected: "반려" };
 class BackupError extends Error {
   constructor(status, code, message, retryable = false) { super(message); Object.assign(this, { status, code, retryable }); }
 }
@@ -108,7 +108,7 @@ async function readBody(req) {
 function cleanEvent(value, remote = false) {
   const bad = () => fail(remote ? 409 : 400, remote ? "backup_damaged" : "invalid_event", remote ? "시트 복구 기록의 형식이 달라 자동 처리를 중단했습니다. 기존 기록을 보존합니다." : "실적 변경 기록의 형식과 크기를 확인해 주세요.");
   if (!keys(value, ["id", "entityId", "entityType", "createdAt", "payload"], ["baseRevision"]) || !id(value.id) || !id(value.entityId)
-    || !["record", "profile"].includes(value.entityType) || !object(value.payload)
+    || !["record", "profile", "approval", "supervisor", "schedule"].includes(value.entityType) || !object(value.payload)
     || (value.baseRevision != null && !id(value.baseRevision))
     || typeof value.createdAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value.createdAt) || !Number.isFinite(Date.parse(value.createdAt))) bad();
   const check = (v, depth = 0) => {
@@ -126,6 +126,21 @@ function cleanEvent(value, remote = false) {
 function eventRow(event) {
   const p = event.payload;
   const cell = (v) => ["string", "number", "boolean"].includes(typeof v) ? v : "";
+  if (event.entityType === "approval") {
+    const target = { kcp: "한국상담심리학회", kca: "한국상담학회" }[p.target] || "";
+    const units = { cases: "사례", groups: "집단", times: "회", papers: "편" };
+    const quantities = object(p.quantities) ? p.quantities : {};
+    const description = [target, cell(p.itemId), cell(p.title), ...Object.entries(units).filter(([key]) => quantities[key] !== undefined).map(([key, unit]) => `${cell(quantities[key])}${unit}`)].filter(Boolean).join(" · ");
+    return [event.id, digest(canonical(event)), event.entityId, event.entityType, event.baseRevision || "", event.createdAt,
+      cell(p.date), p.deleted ? "항목별 승인 삭제 이력" : description, cell(p.caseCode), cell(quantities.sessions), "", cell(quantities.minutes),
+      p.target === "kca" ? STATES[p.status] || "" : "", p.target === "kcp" ? [STATES[p.status], cell(p.supervisorName)].filter(Boolean).join(" · ") : "", STATES[p.status] || "", JSON.stringify(event)];
+  }
+  if (event.entityType === "supervisor") return [event.id, digest(canonical(event)), event.entityId, event.entityType, event.baseRevision || "", event.createdAt,
+    "", p.deleted ? "수퍼바이저 삭제 이력" : ["수퍼바이저", cell(p.name), cell(p.affiliation), cell(p.qualification)].filter(Boolean).join(" · "), "", "", "", "",
+    p.kca === true ? "한국상담학회" : "", p.kcp === true ? "한국상담심리학회" : "", p.deleted ? "" : p.active === false ? "사용 중지" : "사용 중", JSON.stringify(event)];
+  if (event.entityType === "schedule") return [event.id, digest(canonical(event)), event.entityId, event.entityType, event.baseRevision || "", event.createdAt,
+    cell(p.date), p.deleted ? "수련 일정 삭제 이력" : ["수련 일정", cell(p.title), cell(p.itemId), cell(p.start), cell(p.endDate), cell(p.end)].filter(Boolean).join(" · "), cell(p.recordId), "", "", "",
+    "", cell(p.supervisorName), STATES[p.status] || "", JSON.stringify(event)];
   return [event.id, digest(canonical(event)), event.entityId, event.entityType, event.baseRevision || "", event.createdAt,
     cell(p.date), p.deleted ? "삭제 이력" : ACTIVITIES[p.activity] || (event.entityType === "profile" ? "자격·경력 설정" : ""), cell(p.caseId), cell(p.sessions), cell(p.participants), cell(p.minutes),
     STATES[p.recognition?.center?.status] || "", STATES[p.recognition?.supervisor?.status] || "", STATES[p.status] || "", JSON.stringify(event)];
