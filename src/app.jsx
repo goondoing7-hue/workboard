@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import CounselBoard from "./counseling.jsx";
+import WorkboardPerformanceLink from "./workboardPerformanceLink.jsx";
+import { PERFORMANCE_HOME } from "./performanceDeployment.mjs";
 import CounselScheduleCard from "./CounselScheduleCard.jsx";
 import { counselingPresentation } from "./counselingPresentation.mjs";
 import { calendarEventsOnDay, isAllDaySpan, layoutAllDayEvents } from "./scheduleLayout.mjs";
@@ -2207,6 +2209,7 @@ export default function WorkBoard() {
       `}</style>
 
       <div style={{ maxWidth: 760, margin: "0 auto", paddingBottom: 100 }}>
+        <WorkboardPerformanceLink data={storedData} ready={loaded && !needPw && storageOK && Boolean(storedData)} />
         <div className="sticky top-0 z-30" style={{ background: C.bg, borderBottom: "1px solid " + C.rule }}>
           <div className="flex items-center justify-between" style={{ padding: "14px 18px 12px" }}>
             {header ? (
@@ -2461,7 +2464,7 @@ export default function WorkBoard() {
 
           {tab === "counsel" && (
             <><div className="flex justify-end gap-2 flex-wrap mb-3">
-              <a href="./performance.html" target="_blank" rel="noopener noreferrer"
+              <a href={PERFORMANCE_HOME} target="_blank" rel="noopener noreferrer"
                 className="wb-btn inline-flex items-center gap-2 rounded-xl"
                 style={{ padding: "10px 14px", background: C.navy, color: "white", fontSize: 13, fontWeight: 700, textDecoration: "none" }}>
                 <ListChecks size={16} />상담 실적 관리 ↗

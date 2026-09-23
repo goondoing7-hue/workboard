@@ -14,6 +14,7 @@ output/
 artifacts/
 .vercel/
 .netlify/
+.standalone-performance/
 .codex/
 .agents/
 *.zip

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createEvent, normalizeRecord, validateRecord, normalizeApproval, validateApproval, normalizeSupervisor, validateSupervisor, resetChangedApproval, scheduleCompletionEvents, recordsFor, mergeEvents, localDate, canonicalJSON } from './performanceDomain.mjs';
 import { EVENT_PREFIX, META_KEY, readLocalEvents, writeLocalEvents, readLocalBackup, writeLocalBackup, parseBackup, backupText, quarantineCorruptEvents } from './performancePersistence.mjs';
-import { reservationStatus } from './counselingDomain.mjs';
+import { createWorkboardSnapshot, planWorkboardImport } from './performanceWorkboardLink.mjs';
 import { normalizeSchedule, validateSchedule } from './performanceScheduleDomain.mjs';
 
 const endpoint = '/api/performance-sheets';
@@ -218,21 +218,38 @@ export function usePerformanceStore() {
       const old = new Set(current.current.map(e => e.id)); await saveEvents(list); return { imported: list.filter(e => !old.has(e.id)).length };
     },
     importWorkboard: async () => {
-      let board; try { board = JSON.parse(localStorage.getItem('workboard:data') || '{}'); } catch { throw new Error('업무보드 데이터를 읽을 수 없습니다.'); }
-      const data = board.data || board; const reservations = Array.isArray(data.resv) ? data.resv : [];
-      const existing = new Set(current.current.filter(e => e.entityType === 'record').map(e => e.entityId));
-      const completed = reservations.filter(r => reservationStatus(r) === 'done'); const added = [];
-      for (const r of completed) {
-        const id = `workboard:${r.id}`; if (existing.has(id)) continue;
-        const client = (data.clients || []).find(c => c.id === r.clientId);
-        const parseTime = text => { const match = /^(\d{2}):(\d{2})$/.exec(text || ''); return match ? Number(match[1]) * 60 + Number(match[2]) : NaN; };
-        const duration = parseTime(r.endTime) - parseTime(r.time);
-        const record = normalizeRecord({ id, date: r.date, caseId: r.clientId ? `C-${r.clientId}` : '', activity: 'individual', sessions: 1, participants: 1,
-          minutes: duration > 0 ? duration : 0, institution: '춘천시청소년상담복지센터', format: r.remote || r.place === 'meet' ? 'remote' : 'face',
-          gender: client?.gender || '', status: 'done', needsReview: true, sourceReservationId: String(r.id), note: '업무보드 완료 기록에서 가져옴. 실제 활동·시간을 확인한 후 저장해 주세요.' });
-        added.push(createEvent('record', id, record)); existing.add(id);
-      }
-      await saveEvents(added); return { imported: added.length, skipped: completed.length - added.length };
+      const raw = localStorage.getItem('workboard:data');
+      if (!raw) throw new Error('이 주소에 업무보드 기록이 없습니다. 업무보드 연결을 이용해 주세요.');
+      const result = planWorkboardImport(createWorkboardSnapshot(raw), readLocalEvents(localStorage));
+      if (result.events.length) await saveEvents(result.events); return result;
+    },
+    importWorkboardSnapshot: async snapshot => {
+      const result = planWorkboardImport(snapshot, readLocalEvents(localStorage));
+      if (result.events.length) await saveEvents(result.events); return result;
+    },
+    importLinkedBackup: async payload => {
+      if (!payload || typeof payload.backup !== 'string' || new TextEncoder().encode(payload.backup).length > 50 * 1024 * 1024) throw new Error('이전할 실적 백업 형식이나 크기를 확인해 주세요.');
+      const list = parseBackup(payload.backup), bindings = payload.bindings || {};
+      const existing = readLocalEvents(localStorage);
+      let previous; try { previous = JSON.parse(localStorage.getItem(META_KEY) || '{}'); } catch { throw new Error('이 기기의 기존 Google Sheets 연결을 확인해 주세요.'); }
+      let calendarMeta; try { calendarMeta = JSON.parse(localStorage.getItem('counseling-performance:v1:calendar') || '{}'); } catch { throw new Error('이 기기의 기존 캘린더 연결을 확인해 주세요.'); }
+      if ([bindings, previous, calendarMeta].some(value => !value || typeof value !== 'object' || Array.isArray(value))) throw new Error('기존 Google 연결 정보의 형식을 확인해 주세요.');
+      for (const field of ['sheetId', 'calendarId']) if (bindings[field] != null && (typeof bindings[field] !== 'string' || bindings[field].length > 512 || /[\s\x00-\x1f]/.test(bindings[field]))) throw new Error('기존 Google 연결 식별자를 확인해 주세요.');
+      if (bindings.sheetId && previous.sheetId && previous.sheetId !== bindings.sheetId) throw new Error('이 기기와 이전 사이트의 Google Sheets가 다릅니다. 기존 백업 연결을 확인해 주세요.');
+      // Bindings can be absent after a storage restore. Check every persisted
+      // schedule revision on both sides instead of trusting only the metadata
+      // or whichever calendar happens to appear first in the rendered state.
+      const scheduleCalendars = [...existing, ...list].filter(event => event.entityType === 'schedule').map(event => event.payload.calendar?.calendarId);
+      const calendarIds = new Set([calendarMeta.calendarId, bindings.calendarId, ...scheduleCalendars].filter(value => value != null && value !== ''));
+      for (const id of calendarIds) if (typeof id !== 'string' || id.length > 300 || /[\s\x00-\x1f]/.test(id)) throw new Error('수련 일정에 저장된 Google 캘린더 식별자를 확인해 주세요.');
+      if (calendarIds.size > 1) throw new Error('이 기기와 이전 자료에 서로 다른 수련 캘린더가 있습니다. 기존 캘린더 연결을 확인해 주세요.');
+      const calendarId = [...calendarIds][0] || '';
+      mergeEvents(existing, list);
+      const oldIds = new Set(existing.map(event => event.id)); await saveEvents(list);
+      // Only stable bindings travel. OAuth cookies and cloud upload receipts stay on their origin.
+      if (bindings.sheetId && !previous.sheetId) localStorage.setItem(META_KEY, JSON.stringify({ ...previous, sheetId: bindings.sheetId }));
+      if (calendarId && !calendarMeta.calendarId) localStorage.setItem('counseling-performance:v1:calendar', JSON.stringify({ ...calendarMeta, calendarId }));
+      return { imported: list.filter(event => !oldIds.has(event.id)).length };
     },
     connect: async password => {
       updateSync({ error: '' });
