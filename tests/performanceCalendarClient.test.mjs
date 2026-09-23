@@ -15,9 +15,9 @@ const schedule = (patch = {}) => {
   item.calendar.baseFingerprint = scheduleFingerprint(item); item._revision = 'local-v1'; return item;
 };
 const tick = () => new Promise(resolve => setImmediate(resolve));
-async function fixture(initial, handle) {
+async function fixture(initial, handle, options = {}) {
   let records = structuredClone(initial), revision = 1, initialList = true;
-  const calls = [], saves = [], conflicts = [], cleanup = [], values = new Map();
+  const calls = [], saves = [], conflicts = [], cleanup = [], values = new Map(), stateUpdates = [], scripts = [];
   const store = { schedules: records, getSnapshot: () => ({ schedules: structuredClone(records) }), saveSchedules: async rows => {
     for (const raw of rows) {
       const previous = records.find(item => item.id === raw.id);
@@ -26,9 +26,9 @@ async function fixture(initial, handle) {
       records = [...records.filter(item => item.id !== raw.id), saved]; saves.push(saved);
     }
   } };
-  const fetch = async (address, options = {}) => {
-    const url = new URL(address, 'https://workboard.test'), action = url.searchParams.get('action'), body = options.body ? JSON.parse(options.body) : undefined;
-    if (action === 'status') return Response.json({ configured: false, connected: true, calendar: { id: CALENDAR } });
+  const fetch = async (address, requestOptions = {}) => {
+    const url = new URL(address, 'https://workboard.test'), action = url.searchParams.get('action'), body = requestOptions.body ? JSON.parse(requestOptions.body) : undefined;
+    if (action === 'status') return Response.json(options.status || { configured: false, connected: true, calendar: { id: CALENDAR } });
     if (action === 'list' && initialList) { initialList = false; throw new Error('Initial background sync intentionally deferred by test'); }
     const call = { action, body, url }; calls.push(call);
     const result = await handle(call, { get records() { return records; }, edit: mutate => { records = records.map(item => ({ ...mutate(structuredClone(item)), _revision: `local-v${++revision}` })); } });
@@ -36,15 +36,16 @@ async function fixture(initial, handle) {
   };
   const module = { exports: {} };
   const context = vm.createContext({ module, exports: module.exports, require: name => {
-    assert.equal(name, 'react'); return { useState: value => [typeof value === 'function' ? value() : value, () => {}], useRef: value => ({ current: value }), useEffect: effect => cleanup.push(effect()) };
-  }, fetch, URL, AbortController, TextEncoder, crypto: webcrypto, setTimeout, clearTimeout, setInterval: () => 0, clearInterval: () => {}, navigator: { onLine: true },
+    assert.equal(name, 'react'); return { useState: value => [typeof value === 'function' ? value() : value, next => stateUpdates.push(next)], useRef: value => ({ current: value }), useEffect: effect => cleanup.push(effect()) };
+  }, fetch, URL, AbortController, TextEncoder, crypto: webcrypto, setTimeout: options.clock?.setTimeout || setTimeout, clearTimeout: options.clock?.clearTimeout || clearTimeout, setInterval: () => 0, clearInterval: () => {}, navigator: { onLine: true },
   localStorage: { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) },
-  window: { addEventListener() {}, removeEventListener() {} }, document: { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} } });
+  window: { google: options.google, addEventListener() {}, removeEventListener() {} }, document: { visibilityState: 'visible', addEventListener() {}, removeEventListener() {}, createElement: () => ({ remove() { this.removed = true; } }), head: { append: script => scripts.push(script) } } });
   vm.runInContext(bundled, context);
   const hook = module.exports.usePerformanceCalendar(store);
   await tick(); await tick();
+  if (options.status) assert.equal(stateUpdates[0]?.connected, options.status.connected);
   hook.setWindow('2026-01-01', '2026-12-31');
-  return { hook, calls, saves, conflicts, get records() { return records; }, close: () => cleanup.forEach(fn => fn?.()) };
+  return { hook, calls, saves, conflicts, scripts, context, stateUpdates, get records() { return records; }, close: () => cleanup.forEach(fn => fn?.()) };
 }
 const listResult = (call, items) => ({ calendarId: CALENDAR, from: call.url.searchParams.get('from'), to: call.url.searchParams.get('to'), items });
 
@@ -167,4 +168,84 @@ test('restored schedules bound to another training calendar block automatic read
   const f = await fixture([local], () => { throw new Error('A differently bound calendar must not be accessed'); });
   try { await f.hook.syncNow(); assert.equal(f.calls.length, 0); assert.equal(f.saves.length, 0); assert.deepEqual(f.records, [local]); }
   finally { f.close(); }
+});
+
+function manualClock() {
+  let id = 0;
+  const tasks = new Map();
+  return { setTimeout: (callback, delay) => { tasks.set(++id, { callback, delay }); return id; }, clearTimeout: key => tasks.delete(key),
+    expire: delay => { const matching = [...tasks].filter(([, task]) => task.delay === delay); for (const [key, task] of matching) { tasks.delete(key); task.callback(); } return matching.length; },
+    pending: delay => [...tasks.values()].filter(task => task.delay === delay).length };
+}
+const disconnected = { configured: false, connected: false, calendar: null };
+const googleMock = clients => ({ accounts: { oauth2: { initCodeClient: config => { clients.push(config); return { requestCode() {} }; } } } });
+const connectResponse = call => {
+  if (call.action === 'connect') return { clientId: 'test-client', scope: 'test-scope' };
+  if (call.action === 'exchange') return { calendar: { id: CALENDAR } };
+  if (call.action === 'disconnect') return {};
+  throw new Error(`Unexpected ${call.action}`);
+};
+
+test('Google SDK loading times out after 30 seconds and a fresh retry can connect', async () => {
+  const clock = manualClock(), clients = [];
+  const f = await fixture([], connectResponse, { status: disconnected, clock });
+  try {
+    const first = f.hook.connect().then(() => null, error => error);
+    assert.equal(f.scripts.length, 1); const staleLoad = f.scripts[0].onload;
+    assert.equal(clock.expire(30000), 1);
+    const error = await first; assert.match(error.message, /30초.*다시 연결/); assert.equal(f.scripts[0].removed, true);
+    assert.equal(f.calls.some(call => call.action === 'exchange'), false);
+    const retry = f.hook.connect(); assert.equal(f.scripts.length, 2);
+    f.context.window.google = googleMock(clients); staleLoad();
+    await tick(); assert.equal(clients.length, 0);
+    f.scripts[1].onload(); await tick();
+    assert.equal(clients.length, 1); clients[0].callback({ code: 'successful-code' }); await retry;
+    assert.equal(f.calls.filter(call => call.action === 'exchange').length, 1);
+    assert.equal(clock.pending(30000), 0); assert.equal(clock.pending(300000), 0);
+  } finally { f.close(); }
+});
+
+test('SDK load failure or an incomplete SDK gives retry instructions without starting OAuth', async () => {
+  for (const event of ['error', 'load']) {
+    const f = await fixture([], connectResponse, { status: disconnected, clock: manualClock() });
+    try {
+      const result = f.hook.connect().then(() => null, error => error);
+      f.scripts[0][event === 'error' ? 'onerror' : 'onload']();
+      assert.match((await result).message, /다시 연결/); assert.equal(f.scripts[0].removed, true); assert.equal(f.calls.length, 0);
+    } finally { f.close(); }
+  }
+});
+
+test('an unanswered Google popup expires after five minutes and its late code cannot be exchanged', async () => {
+  const clock = manualClock(), clients = [];
+  const f = await fixture([], connectResponse, { status: disconnected, clock, google: googleMock(clients) });
+  try {
+    const first = f.hook.connect().then(() => null, error => error); await tick();
+    assert.equal(clients.length, 1); assert.equal(clock.pending(300000), 1);
+    clock.expire(300000); const error = await first;
+    assert.match(error.message, /5분/); assert.match(error.message, /Chrome.*Edge/); assert.match(error.message, /다시 연결/);
+    assert.match(f.stateUpdates.at(-1).error, /5분/);
+    clients[0].callback({ code: 'too-late-code' }); await tick();
+    assert.equal(f.calls.some(call => call.action === 'exchange'), false);
+    const retry = f.hook.connect(); await tick();
+    clients[1].callback({ code: 'retry-code' }); await retry;
+    assert.deepEqual(f.calls.filter(call => call.action === 'exchange').map(call => call.body.code), ['retry-code']);
+    assert.equal(clock.pending(300000), 0);
+  } finally { f.close(); }
+});
+
+test('blocked popup and cancelled connection release the attempt and ignore later OAuth callbacks', async () => {
+  for (const reason of ['blocked', 'disconnect', 'unmount']) {
+    const clock = manualClock(), clients = [];
+    const f = await fixture([], connectResponse, { status: disconnected, clock, google: googleMock(clients) });
+    try {
+      const result = f.hook.connect().then(() => null, error => error); await tick();
+      if (reason === 'blocked') clients[0].error_callback({ type: 'popup_failed_to_open' });
+      else if (reason === 'disconnect') await f.hook.disconnect();
+      else f.close();
+      const error = await result; assert.match(error.message, reason === 'blocked' ? /팝업.*다시 연결/ : /취소.*다시 시작/);
+      clients[0].callback({ code: 'stale-code' }); await tick();
+      assert.equal(f.calls.some(call => call.action === 'exchange'), false); assert.equal(clock.pending(300000), 0);
+    } finally { f.close(); }
+  }
 });

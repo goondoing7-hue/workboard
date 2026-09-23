@@ -17,14 +17,47 @@ async function api(action, body, query = '') {
 }
 let googleReady;
 function loadGoogle() {
-  if (window.google?.accounts?.oauth2) return Promise.resolve();
-  if (!googleReady) googleReady = new Promise((resolve, reject) => { const script = document.createElement('script'); script.src = 'https://accounts.google.com/gsi/client'; script.async = true; script.onload = resolve; script.onerror = () => { googleReady = null; reject(new Error('Google 연결 창을 불러오지 못했습니다.')); }; document.head.append(script); });
+  if (typeof window.google?.accounts?.oauth2?.initCodeClient === 'function') return Promise.resolve();
+  if (!googleReady) {
+    const pending = new Promise((resolve, reject) => {
+      let settled = false;
+      const script = document.createElement('script'); script.src = 'https://accounts.google.com/gsi/client'; script.async = true;
+      const finish = error => {
+        if (settled) return; settled = true; clearTimeout(timeout); script.onload = null; script.onerror = null;
+        if (error) { script.remove(); reject(error); } else resolve();
+      };
+      const timeout = setTimeout(() => finish(new Error('30초 동안 Google 연결 화면을 불러오지 못했습니다. 인터넷 연결을 확인하고 다시 연결해 주세요. 계속되면 Chrome 또는 Edge에서 이 페이지를 열어 주세요.')), 30000);
+      script.onload = () => finish(typeof window.google?.accounts?.oauth2?.initCodeClient === 'function' ? null : new Error('Google 연결 기능이 준비되지 않았습니다. 페이지를 새로고침한 뒤 다시 연결해 주세요.'));
+      script.onerror = () => finish(new Error('Google 연결 화면을 불러오지 못했습니다. 인터넷 연결과 브라우저 차단 설정을 확인하고 다시 연결해 주세요.'));
+      try { document.head.append(script); } catch { finish(new Error('Google 연결 화면을 열지 못했습니다. 페이지를 새로고침한 뒤 다시 연결해 주세요.')); }
+    });
+    googleReady = pending;
+    void pending.catch(() => { if (googleReady === pending) googleReady = null; });
+  }
   return googleReady;
+}
+function requestGoogleCode(config, signal) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return; settled = true; clearTimeout(timeout); signal.removeEventListener('abort', cancelled);
+      if (error) reject(error); else resolve(value);
+    };
+    const cancelled = () => finish(new Error('Google 연결 시도가 취소되었습니다. 연결 버튼에서 다시 시작해 주세요.'));
+    const timeout = setTimeout(() => finish(new Error('5분 동안 Google 계정 승인을 확인하지 못했습니다. 열려 있는 계정 선택 창을 닫고 다시 연결해 주세요. 승인 창이 보이지 않으면 Chrome이나 Edge에서 사이트를 열고 다시 연결해 주세요.')), 5 * 60000);
+    signal.addEventListener('abort', cancelled, { once: true });
+    if (signal.aborted) { cancelled(); return; }
+    try {
+      window.google.accounts.oauth2.initCodeClient({ client_id: config.clientId, scope: config.scope, ux_mode: 'popup', select_account: true, include_granted_scopes: false,
+        callback: value => finish(value?.error || !value?.code ? new Error('Google 캘린더 연결 승인이 완료되지 않았습니다. 다시 연결해 주세요.') : null, value),
+        error_callback: error => finish(new Error(error?.type === 'popup_failed_to_open' ? 'Google 계정 선택 창이 차단되었습니다. 팝업을 허용하거나 Chrome 또는 Edge에서 이 페이지를 열고 다시 연결해 주세요.' : 'Google 연결 창이 닫혔거나 열리지 않았습니다. 연결 버튼에서 다시 시작해 주세요.')) }).requestCode();
+    } catch { finish(new Error('Google 계정 선택 창을 열지 못했습니다. 팝업을 허용한 뒤 다시 연결해 주세요.')); }
+  });
 }
 function defaultWindow() { const y = new Date().getFullYear(); return { from: `${y}-01-01`, to: `${y}-12-31` }; }
 export function usePerformanceCalendar(store) {
   const [state, setState] = useState({ configured: false, connected: false, busy: false, error: '', lastSynced: readMeta().lastSynced || '', calendar: null });
-  const storeRef = useRef(store), stateRef = useRef(state), alive = useRef(true), busy = useRef(false), generation = useRef(0), timer = useRef(null), windowRef = useRef(defaultWindow());
+  const storeRef = useRef(store), stateRef = useRef(state), alive = useRef(true), busy = useRef(false), generation = useRef(0), timer = useRef(null), windowRef = useRef(defaultWindow()), connectionAttempt = useRef(null);
   storeRef.current = store;
   const update = patch => { stateRef.current = { ...stateRef.current, ...patch }; if (alive.current) setState(stateRef.current); };
   const schedules = () => storeRef.current.getSnapshot().schedules || [];
@@ -133,7 +166,7 @@ export function usePerformanceCalendar(store) {
     })();
     const wake = () => { if (document.visibilityState !== 'hidden') void syncRef.current(); }, interval = setInterval(wake, 60000);
     window.addEventListener('online', wake); window.addEventListener('focus', wake); document.addEventListener('visibilitychange', wake);
-    return () => { alive.current = false; generation.current++; clearTimeout(timer.current); clearInterval(interval); window.removeEventListener('online', wake); window.removeEventListener('focus', wake); document.removeEventListener('visibilitychange', wake); };
+    return () => { alive.current = false; generation.current++; connectionAttempt.current?.abort(); clearTimeout(timer.current); clearInterval(interval); window.removeEventListener('online', wake); window.removeEventListener('focus', wake); document.removeEventListener('visibilitychange', wake); };
   }, []);
   return { ...state, pending: (store.schedules || []).filter(s => ['pending','error','local'].includes(s.calendar.state) && !s._conflict).length,
     syncNow: () => syncRef.current(),
@@ -160,15 +193,22 @@ export function usePerformanceCalendar(store) {
     },
     completeSchedule: (id, details) => storeRef.current.completeSchedule(id, details),
     connect: async password => {
+      connectionAttempt.current?.abort();
+      const attempt = new AbortController(); connectionAttempt.current = attempt;
+      const activeAttempt = () => alive.current && connectionAttempt.current === attempt && !attempt.signal.aborted;
+      const ensureActive = () => { if (!activeAttempt()) throw new Error('Google 연결 시도가 취소되었습니다. 연결 버튼에서 다시 시작해 주세요.'); };
       update({ error: '' });
       try {
-        await loadGoogle(); const config = await api('connect', { password: password || '' });
-        const result = await new Promise((resolve,reject) => { window.google.accounts.oauth2.initCodeClient({ client_id: config.clientId, scope: config.scope, ux_mode: 'popup', select_account: true, include_granted_scopes: false, callback: value => value.error ? reject(new Error('Google 캘린더 연결 승인이 완료되지 않았습니다.')) : resolve(value), error_callback: () => reject(new Error('Google 연결 창이 닫혔거나 차단되었습니다.')) }).requestCode(); });
+        await loadGoogle(); ensureActive();
+        const config = await api('connect', { password: password || '' }); ensureActive();
+        const result = await requestGoogleCode(config, attempt.signal); ensureActive();
         generation.current++; const saved = readMeta().calendarId || schedules().find(s => s.calendar.calendarId)?.calendar.calendarId;
         const response = await api('exchange', { code: result.code, ...(saved ? { calendarId: saved } : {}) });
+        ensureActive();
         checkBinding(response.calendar?.id); localStorage.setItem(META, JSON.stringify({ ...readMeta(), calendarId: response.calendar.id })); update({ connected: true, calendar: response.calendar, busy: false }); queue();
-      } catch (error) { update({ error: error.message }); throw error; }
+      } catch (error) { if (activeAttempt()) update({ error: error.message }); throw error; }
+      finally { if (connectionAttempt.current === attempt) connectionAttempt.current = null; }
     },
-    disconnect: async () => { generation.current++; await api('disconnect', {}); update({ connected: false, busy: false, error: '' }); },
+    disconnect: async () => { connectionAttempt.current?.abort(); generation.current++; await api('disconnect', {}); update({ connected: false, busy: false, error: '' }); },
   };
 }
