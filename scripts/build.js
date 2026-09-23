@@ -108,8 +108,29 @@ fs.writeFileSync(path.join(dist, "performance.html"), `<!DOCTYPE html>
 <meta name="theme-color" content="#122a4a" />
 <meta name="robots" content="noindex, nofollow" />
 <meta name="referrer" content="strict-origin-when-cross-origin" />
+<meta name="description" content="상담 기록부터 학회별 승인 현황, 수련 일정까지 한곳에서 관리하세요." />
 <title>상담 실적 관리</title>
-<link rel="icon" href="icon-192.png" />
+<link rel="canonical" href="https://workboard-beta.vercel.app/performance.html" />
+<link rel="icon" type="image/png" sizes="32x32" href="/performance-icon-32.png" />
+<link rel="icon" type="image/svg+xml" sizes="any" href="/performance-icon.svg" />
+<link rel="apple-touch-icon" sizes="192x192" href="/performance-icon-192.png" />
+<meta property="og:type" content="website" />
+<meta property="og:locale" content="ko_KR" />
+<meta property="og:site_name" content="상담실적관리" />
+<meta property="og:title" content="상담 실적 관리" />
+<meta property="og:description" content="상담 기록부터 학회별 승인 현황, 수련 일정까지 한곳에서 관리하세요." />
+<meta property="og:url" content="https://workboard-beta.vercel.app/performance.html" />
+<meta property="og:image" content="https://workboard-beta.vercel.app/performance-share-v1.png" />
+<meta property="og:image:secure_url" content="https://workboard-beta.vercel.app/performance-share-v1.png" />
+<meta property="og:image:type" content="image/png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="상담 실적 관리 — 상담 기록, 학회별 승인 현황, 수련 일정" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="상담 실적 관리" />
+<meta name="twitter:description" content="상담 기록부터 학회별 승인 현황, 수련 일정까지 한곳에서 관리하세요." />
+<meta name="twitter:image" content="https://workboard-beta.vercel.app/performance-share-v1.png" />
+<meta name="twitter:image:alt" content="상담 실적 관리 — 상담 기록, 학회별 승인 현황, 수련 일정" />
 <style>${fs.readFileSync(R("src/performance.css"), "utf8")}\n${fs.readFileSync(R("src/performanceMilitary.css"), "utf8")}\n${fs.readFileSync(R("src/performanceApprovals.css"), "utf8")}\n${fs.readFileSync(R("src/performanceSchedule.css"), "utf8")}</style></head>
 <body><div id="root"></div><noscript>실적을 관리하려면 JavaScript를 허용해 주세요.</noscript><script>${performanceJs}</script><script>
 if ('serviceWorker' in navigator && !['localhost','127.0.0.1'].includes(location.hostname)) window.addEventListener('load', function(){ navigator.serviceWorker.register('/sw.js').catch(function(){}); });

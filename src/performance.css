@@ -18,7 +18,8 @@ svg { flex-shrink: 0; }
 .perf-app { min-height: 100vh; }
 .perf-sidebar { position: fixed; width: 225px; inset: 0 auto 0 0; display: flex; flex-direction: column; background: var(--perf-navy); color: #c4cfdd; padding: 31px 15px 20px; z-index: 20; }
 .perf-brand { display: flex; align-items: center; gap: 12px; color: white; padding: 0 13px; }
-.perf-brand > span { display: grid; place-items: center; width: 40px; height: 43px; border-radius: 9px; background: #2e66bc; color: white; }
+.perf-brand > span { display: grid; place-items: center; width: 40px; height: 43px; flex-shrink: 0; }
+.perf-brand > span > img { display: block; width: 40px; height: 40px; }
 .perf-brand strong { display: block; letter-spacing: -.8px; font-size: 23px; font-weight: 800; }
 .perf-brand small { display: block; font-size: 14px; color: #a9bdd3; margin-top: 3px; }
 .perf-workspace-label { color: #7e97b1; font-size: 14px; letter-spacing: .3px; padding: 0 16px; margin: 46px 0 13px; font-weight: 600; }

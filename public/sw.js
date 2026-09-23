@@ -1,6 +1,6 @@
 /* 업무보드 — 오프라인 캐시 */
-const CACHE = "workboard-v9";
-const ASSETS = ["./", "./index.html", "./adhd.html", "./performance.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
+const CACHE = "workboard-v10";
+const ASSETS = ["./", "./index.html", "./adhd.html", "./performance.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./performance-icon.svg", "./performance-icon-32.png", "./performance-icon-192.png"];
 const ASSET_URLS = new Set(ASSETS.map((asset) => new URL(asset, self.location.href).href));
 
 self.addEventListener("install", (e) => {
