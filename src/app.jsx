@@ -12,6 +12,7 @@ import { prepareCenterEvent, deleteCenterEvent, isHiddenCenterEvent } from "./ce
 import { externalReservation } from "./googleCalendarDomain.mjs";
 import { mergeReservation, reservationStatus, reservationScheduleChanged, sessionNumber, validateReservation } from "./counselingDomain.mjs";
 import { documentScheduleOf, documentScheduleError, patchDocumentSchedule, toggleDocument, formatDocumentTime } from "./documentSchedule.mjs";
+import { VACATION_TYPES, normalizeVacation, vacationError, vacationSummary, vacationYear, vacationYears, sortVacations, formatDays, toggleVacationUsed } from "./vacationDomain.mjs";
 import {
   Plus, Check, ChevronRight, ChevronLeft, Trash2, Inbox, Send,
   Clock, X, Settings2, FolderClosed, CalendarDays, AlertTriangle,
@@ -281,7 +282,7 @@ const VIEW_KEY = "workboard:view";
 const lastView = () => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch (e) { return {}; } };
 const saveView = (v) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch (e) {} };
 
-const APP_VERSION = "2026.09.21";
+const APP_VERSION = "2026.09.27";
 /* ============================================================
    잠금 — 비밀번호로 내용 자체를 잠급니다.
    화면만 가리는 게 아니라 저장되는 내용이 암호문이 됩니다.
@@ -710,7 +711,7 @@ function DatePick({ value, onChange, style, disabled }) {
 
   return (
     <span ref={boxRef} style={{ position: "relative", display: "inline-block", ...(style || {}) }}>
-      <button onClick={() => !disabled && setOpen(!open)} disabled={disabled}
+      <button type="button" onClick={() => !disabled && setOpen(!open)} disabled={disabled}
         className="wb-btn w-full text-left rounded-lg"
         style={{ padding: "9px 11px", fontSize: 13.5, fontWeight: 650,
           border: "1px solid " + (open ? C.navy : C.rule),
@@ -723,14 +724,14 @@ function DatePick({ value, onChange, style, disabled }) {
           width: 250, background: C.surface, border: "1px solid " + C.rule,
           boxShadow: "0 8px 24px rgba(26,33,30,0.16)", zIndex: 50, padding: 10 }}>
           <div className="flex items-center justify-between mb-2">
-            <button onClick={() => shift(-1)} className="wb-btn"
+            <button type="button" onClick={() => shift(-1)} className="wb-btn"
               style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 3 }}>
               <ChevronLeft size={16} />
             </button>
             <span style={{ fontSize: 13, fontWeight: 750 }}>
               {Number(cur.slice(0, 4))}년 {Number(cur.slice(5, 7))}월
             </span>
-            <button onClick={() => shift(1)} className="wb-btn"
+            <button type="button" onClick={() => shift(1)} className="wb-btn"
               style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", padding: 3 }}>
               <ChevronRight size={16} />
             </button>
@@ -746,7 +747,7 @@ function DatePick({ value, onChange, style, disabled }) {
               const on = c.iso === value;
               const today = c.iso === todayISO();
               return (
-                <button key={c.iso} onClick={() => { onChange(c.iso); setOpen(false); }}
+                <button type="button" key={c.iso} onClick={() => { onChange(c.iso); setOpen(false); }}
                   className="wb-btn flex items-center justify-center rounded-lg"
                   style={{ height: 28, fontSize: 12, fontWeight: on ? 800 : 600, cursor: "pointer",
                     border: "none", fontVariantNumeric: "tabular-nums",
@@ -758,11 +759,11 @@ function DatePick({ value, onChange, style, disabled }) {
             })}
           </div>
           <div className="flex items-center justify-between" style={{ marginTop: 6 }}>
-            <button onClick={() => { onChange(""); setOpen(false); }} className="wb-btn"
+            <button type="button" onClick={() => { onChange(""); setOpen(false); }} className="wb-btn"
               style={{ background: "none", border: "none", color: C.faint, fontSize: 11.5, fontWeight: 650, cursor: "pointer" }}>
               지우기
             </button>
-            <button onClick={() => { onChange(todayISO()); setOpen(false); }} className="wb-btn"
+            <button type="button" onClick={() => { onChange(todayISO()); setOpen(false); }} className="wb-btn"
               style={{ background: "none", border: "none", color: C.navy, fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>
               오늘
             </button>
@@ -1752,7 +1753,7 @@ export default function WorkBoard() {
   const [syncState, setSyncState] = useState("off");   // off | syncing | ok | error
   const [syncMsg, setSyncMsg] = useState("");
   const [lastBackup, setLastBackup] = useState(() => Number(localStorage.getItem(BACKUP_KEY) || 0));
-  const [tab, setTab] = useState(() => (["home", "projects", "plan", "counsel", "notes", "contacts"].includes(lastView().tab) ? lastView().tab : "home"));
+  const [tab, setTab] = useState(() => (["home", "projects", "plan", "counsel", "vacation", "notes", "contacts"].includes(lastView().tab) ? lastView().tab : "home"));
   const [openProject, setOpenProject] = useState(() => lastView().pid || null);
   const [openSub, setOpenSub] = useState(() => lastView().sid || null);
   const [showSettings, setShowSettings] = useState(false);
@@ -1779,11 +1780,12 @@ export default function WorkBoard() {
     dueOrder: p.dueOrder || [], topOrder: p.topOrder || [], planHidden: p.planHidden || [],
     events: p.events || [], clients: p.clients || [], resv: p.resv || [],
     resvTypes: p.resvTypes || [], contacts: p.contacts || [],
+    vacations: p.vacations || [],
     dueManual: !!p.dueManual, updatedAt: p.updatedAt || 0,
   });
 
   /* 상대 쪽에 아예 없는 항목은 내 것을 지키고, 비어 있다고 온 것만 받아들입니다 */
-  const KEEP = ["projects", "memos", "notes", "events", "clients", "resv", "resvTypes", "contacts"];
+  const KEEP = ["projects", "memos", "notes", "events", "clients", "resv", "resvTypes", "contacts", "vacations"];
   const guard = (incoming, mine) => {
     if (!mine) return incoming;
     const out = { ...incoming };
@@ -2181,7 +2183,7 @@ export default function WorkBoard() {
     : sub ? { title: sub.name, sup: project.name, back: () => setOpenSub(null), color: colorOf(project, projectIdx) }
     : project ? { title: project.name, sup: "사업", back: () => setOpenProject(null), color: colorOf(project, projectIdx) } : null;
 
-  const titleOf = { home: "메인보드", projects: "업무 관리", plan: "일정", counsel: "상담", notes: "메모함", contacts: "연락처" }[tab] || "메인보드";
+  const titleOf = { home: "메인보드", projects: "업무 관리", plan: "일정", counsel: "상담", vacation: "휴가", notes: "메모함", contacts: "연락처" }[tab] || "메인보드";
 
   return (
     <div style={{ fontFamily: FONT, background: C.bg, minHeight: "100vh", color: C.ink }}>
@@ -2493,6 +2495,17 @@ export default function WorkBoard() {
                 resv: (d.resv || []).map((r) => (r.id === rid ? { ...r, log } : r)) }))} /></>
           )}
 
+          {tab === "vacation" && (
+            <VacationView list={data.vacations || []}
+              onSave={(v) => setData((d) => {
+                const rows = d.vacations || [];
+                if (v.id) return { ...d, vacations: rows.map((r) => (r.id === v.id ? { ...r, ...v } : r)) };
+                return { ...d, vacations: [...rows, { ...v, id: uid(), createdAt: Date.now() }] };
+              })}
+              onDelete={(id) => setData((d) => ({ ...d, vacations: (d.vacations || []).filter((r) => r.id !== id) }))}
+              onToggleUsed={(id) => setData((d) => ({ ...d, vacations: toggleVacationUsed(d.vacations || [], id) }))} />
+          )}
+
           {tab === "contacts" && (
             <ContactsView data={data}
               onSave={(v) => setData((d) => {
@@ -2519,6 +2532,7 @@ export default function WorkBoard() {
             { k: "projects", t: "업무", i: FolderClosed, badge: 0 },
             { k: "plan", t: "일정", i: CalendarDays, badge: 0 },
             { k: "counsel", t: "상담", i: Users, badge: 0 },
+            { k: "vacation", t: "휴가", i: Sunrise, badge: 0 },
             { k: "notes", t: "메모함", i: StickyNote, badge: 0 },
             { k: "contacts", t: "연락처", i: Phone, badge: 0 }].map((x) => {
             const on = tab === x.k;
@@ -2680,6 +2694,261 @@ function ContactSheet({ init, projects, onSave, onDelete, onClose }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------
+   휴가 — 월차와 대체휴가 장부
+------------------------------------------------------------------- */
+const VacSeg = ({ options, value, onPick }) => (
+  <div className="flex rounded-xl" style={{ background: "#F1F3F0", padding: 3, gap: 3 }}>
+    {options.map((o) => {
+      const on = value === o.v;
+      return (
+        <button key={o.v} type="button" onClick={() => onPick(o.v)}
+          className="wb-btn flex-1 rounded-lg" aria-pressed={on}
+          style={{ padding: "10px 4px", fontSize: 13, fontWeight: 700, cursor: "pointer",
+            background: on ? C.surface : "transparent", color: on ? (o.color || C.ink) : C.faint,
+            border: on ? "1px solid " + C.rule : "1px solid transparent" }}>
+          {o.t}
+        </button>
+      );
+    })}
+  </div>
+);
+
+const VacBalance = ({ type, sum, tone }) => (
+  <Card style={{ padding: "13px 14px", minWidth: 0 }}>
+    <div className="flex items-center justify-between gap-2">
+      <span style={{ fontSize: 12.5, fontWeight: 750, color: C.ink }}>{type}</span>
+      <Label>잔여</Label>
+    </div>
+    <div style={{ marginTop: 4, fontSize: 25, fontWeight: 800, lineHeight: 1.15,
+      color: sum.left < 0 ? C.seal : tone, fontVariantNumeric: "tabular-nums" }}>
+      {formatDays(sum.left)}<span style={{ fontSize: 13.5, fontWeight: 700, marginLeft: 2 }}>일</span>
+    </div>
+    <div style={{ marginTop: 6, fontSize: 11, color: C.faint, lineHeight: 1.6, fontVariantNumeric: "tabular-nums" }}>
+      적립 {formatDays(sum.granted)} · 사용 {formatDays(sum.used)}
+      {sum.planned > 0 && <> · <span style={{ color: C.amber, fontWeight: 700 }}>예정 {formatDays(sum.planned)}</span></>}
+    </div>
+    {sum.left < 0 && <div style={{ marginTop: 5, fontSize: 10.5, color: C.seal, fontWeight: 700 }}>적립보다 많이 썼습니다</div>}
+  </Card>
+);
+
+function VacationSheet({ draft, onSave, onClose }) {
+  const dismiss = useDismiss(onClose);
+  const [v, setV] = useState(() => ({
+    type: draft.type || "월차", mode: draft.mode || "사용",
+    date: draft.date || todayISO(), note: draft.note || "",
+    days: draft.days === undefined || draft.days === null ? 1 : draft.days,
+  }));
+  const [err, setErr] = useState("");
+  const patch = (p) => { setV((x) => ({ ...x, ...p })); setErr(""); };
+  const submit = (e) => {
+    e.preventDefault();
+    const message = vacationError(v);
+    if (message) { setErr(message); return; }
+    onSave({ ...v, days: Number(v.days) });
+  };
+  const box = { width: "100%", minWidth: 0, padding: "11px 12px", border: "1px solid " + C.rule,
+    borderRadius: 10, background: C.surface, color: C.ink, fontSize: 14, fontFamily: FONT, outline: "none" };
+
+  return (
+    <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade"
+      style={{ background: "rgba(26,33,30,0.4)", zIndex: 70 }} {...dismiss}>
+      <form onSubmit={submit} role="dialog" aria-modal="true" aria-label="휴가 기록"
+        className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
+        style={{ maxWidth: 430, background: C.bg, padding: 20, maxHeight: "90dvh", overflowY: "auto" }}>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <Label>휴가 기록</Label>
+            <div style={{ fontSize: 18, fontWeight: 750, marginTop: 3 }}>{draft.id ? "기록 고치기" : "새 기록"}</div>
+          </div>
+          <button type="button" onClick={onClose} aria-label="닫기" className="wb-btn rounded-lg"
+            style={{ border: "none", background: "transparent", color: C.muted, cursor: "pointer", padding: 6 }}><X size={20} /></button>
+        </div>
+
+        <div style={{ marginTop: 18 }}>
+          <Label>휴가 종류</Label>
+          <div style={{ marginTop: 7 }}>
+            <VacSeg value={v.type} onPick={(type) => patch({ type })}
+              options={VACATION_TYPES.map((t) => ({ v: t, t }))} />
+          </div>
+        </div>
+
+        <div style={{ marginTop: 14 }}>
+          <Label>구분</Label>
+          <div style={{ marginTop: 7 }}>
+            <VacSeg value={v.mode} onPick={(mode) => patch({ mode })} options={[
+              { v: "적립", t: "적립 (+)", color: C.green },
+              { v: "사용", t: "사용 (−)", color: C.seal },
+            ]} />
+          </div>
+          <div style={{ marginTop: 6, fontSize: 11.5, color: C.faint, lineHeight: 1.6 }}>
+            {v.mode === "적립"
+              ? (v.type === "월차" ? "연차로 받은 일수를 적어 두면 잔여의 기준이 됩니다." : "주말 근무나 야간 근무로 생긴 휴가를 적립합니다.")
+              : "쓰기로 한 날입니다. 적어 두는 순간 잔여에서 빠집니다."}
+          </div>
+        </div>
+
+        <div style={{ marginTop: 14 }}>
+          <Label>{v.mode === "적립" ? "발생한 날" : "쉬는 날"}</Label>
+          <div style={{ marginTop: 7 }}><DatePick value={v.date} onChange={(date) => patch({ date })} style={{ width: "100%" }} /></div>
+        </div>
+
+        <div style={{ marginTop: 14 }}>
+          <Label>일수</Label>
+          <div className="flex items-center gap-2" style={{ marginTop: 7 }}>
+            <input type="number" inputMode="decimal" step="0.5" min="0" aria-label="일수"
+              value={v.days} onChange={(e) => patch({ days: e.target.value })}
+              style={{ ...box, flex: 1, fontWeight: 700, fontVariantNumeric: "tabular-nums" }} />
+            <div className="flex gap-1.5 shrink-0">
+              {[0.5, 1, 2].map((n) => (
+                <button key={n} type="button" onClick={() => patch({ days: n })} className="wb-btn rounded-lg"
+                  style={{ padding: "10px 11px", fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+                    background: Number(v.days) === n ? C.navySoft : C.surface,
+                    color: Number(v.days) === n ? C.navy : C.muted,
+                    border: "1px solid " + (Number(v.days) === n ? C.navy : C.rule) }}>
+                  {formatDays(n)}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={{ marginTop: 6, fontSize: 11.5, color: C.faint }}>반차는 0.5로 적습니다.</div>
+        </div>
+
+        <div style={{ marginTop: 14 }}>
+          <Label>내용</Label>
+          <input value={v.note} onChange={(e) => patch({ note: e.target.value })} aria-label="내용"
+            placeholder={v.mode === "적립" ? "토요일 캠프 인솔" : "가족 행사"}
+            style={{ ...box, marginTop: 7 }} />
+        </div>
+
+        {err && <div role="alert" style={{ color: C.seal, fontSize: 12.5, marginTop: 13 }}>{err}</div>}
+
+        <div className="flex justify-end gap-2" style={{ marginTop: 20 }}>
+          <button type="button" onClick={onClose} className="wb-btn rounded-xl"
+            style={{ padding: "11px 16px", border: "1px solid " + C.rule, background: C.surface, color: C.muted, fontWeight: 650, cursor: "pointer" }}>취소</button>
+          <button type="submit" className="wb-btn rounded-xl"
+            style={{ padding: "11px 22px", border: "1px solid " + C.navy, background: C.navy, color: "#fff", fontWeight: 700, cursor: "pointer" }}>저장</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function VacationView({ list, onSave, onDelete, onToggleUsed }) {
+  const [sheet, setSheet] = useState(null);
+  const [year, setYear] = useState("");
+  const [type, setType] = useState("all");
+
+  const years = vacationYears(list);
+  const thisYear = todayISO().slice(0, 4);
+  const active = year || (years.includes(thisYear) ? thisYear : years[0] || thisYear);
+
+  const shown = sortVacations(list)
+    .filter((r) => vacationYear(r) === active)
+    .filter((r) => type === "all" || r.type === type);
+
+  const toneOf = (t) => (t === "월차" ? C.navy : "#226D5A");
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-2" style={{ gap: 10 }}>
+        {VACATION_TYPES.map((t) => (
+          <VacBalance key={t} type={t} tone={toneOf(t)} sum={vacationSummary(list, t, active)} />
+        ))}
+      </div>
+
+      <div className="flex items-center gap-2">
+        <div className="flex-1 min-w-0">
+          <VacSeg value={type} onPick={setType} options={[
+            { v: "all", t: "전체" }, ...VACATION_TYPES.map((t) => ({ v: t, t, color: toneOf(t) })),
+          ]} />
+        </div>
+        <Btn kind="solid" icon={Plus} onClick={() => setSheet({})}>추가</Btn>
+      </div>
+
+      {years.length > 1 && (
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {years.map((y) => {
+            const on = active === y;
+            return (
+              <button key={y} onClick={() => setYear(y)} className="wb-btn rounded-full"
+                style={{ fontSize: 11.5, fontWeight: 700, padding: "5px 12px", cursor: "pointer",
+                  background: on ? C.navy : C.surface, color: on ? "#fff" : C.muted,
+                  border: "1px solid " + (on ? C.navy : C.rule) }}>{y}년</button>
+            );
+          })}
+        </div>
+      )}
+
+      {shown.length === 0 ? (
+        <Card style={{ padding: 24, textAlign: "center", color: C.muted, fontSize: 13.5, lineHeight: 1.7 }}>
+          {list.length === 0
+            ? <>휴가 장부가 비어 있습니다.<br />받은 월차를 <b style={{ color: C.green }}>적립</b>으로 먼저 적어 두면<br />쓸 때마다 잔여가 줄어듭니다.</>
+            : `${active}년에 적어 둔 기록이 없습니다.`}
+        </Card>
+      ) : (
+        <Card style={{ padding: "2px 14px" }}>
+          {shown.map((raw, idx) => {
+            const r = normalizeVacation(raw);
+            const plus = r.mode === "적립";
+            return (
+              <div key={r.id} className="flex items-center gap-2.5"
+                style={{ borderTop: idx === 0 ? "none" : "1px solid " + C.rule, padding: "9px 0" }}>
+                <span className="flex items-center justify-center rounded-full shrink-0"
+                  style={{ width: 27, height: 27, fontSize: 14, fontWeight: 800,
+                    background: plus ? C.greenSoft : C.sealSoft, color: plus ? C.green : C.seal }}>
+                  {plus ? "+" : "−"}
+                </span>
+
+                <button onClick={() => setSheet(r)} className="wb-btn flex-1 min-w-0 text-left"
+                  style={{ background: "none", border: "none", padding: "5px 0", cursor: "pointer" }}
+                  title="눌러서 고치기">
+                  <span className="flex items-baseline gap-2 min-w-0">
+                    <span className="shrink-0" style={{ fontSize: 13.5, fontWeight: 700,
+                      color: r.used ? C.faint : C.ink, fontVariantNumeric: "tabular-nums" }}>
+                      {fmtDateK(r.date)}
+                    </span>
+                    <span className="truncate" style={{ fontSize: 12.5, color: C.muted }}>{r.note}</span>
+                  </span>
+                  <span className="block" style={{ fontSize: 10.5, color: C.faint, marginTop: 2 }}>
+                    {r.type}
+                  </span>
+                </button>
+
+                <span className="shrink-0" style={{ fontSize: 13.5, fontWeight: 800, minWidth: 40, textAlign: "right",
+                  color: plus ? C.green : r.used ? C.faint : C.seal, fontVariantNumeric: "tabular-nums" }}>
+                  {plus ? "+" : "−"}{formatDays(r.days)}일
+                </span>
+
+                {plus ? (
+                  <span className="shrink-0" style={{ width: 54 }} />
+                ) : (
+                  <button onClick={() => onToggleUsed(r.id)} aria-pressed={r.used}
+                    title={r.used ? "예정으로 되돌리기" : "다녀온 것으로 표시"}
+                    className="wb-btn shrink-0 inline-flex items-center justify-center gap-1 rounded-full"
+                    style={{ width: 54, padding: "5px 0", fontSize: 10.5, fontWeight: 750, cursor: "pointer",
+                      background: r.used ? C.greenSoft : C.amberSoft, color: r.used ? C.green : C.amber,
+                      border: "1px solid " + (r.used ? C.greenSoft : C.amberSoft) }}>
+                    {r.used && <Check size={11} strokeWidth={3} />}{r.used ? "사용함" : "예정"}
+                  </button>
+                )}
+
+                <DeleteBtn onDelete={() => onDelete(r.id)} label="" />
+              </div>
+            );
+          })}
+        </Card>
+      )}
+
+      {sheet && (
+        <VacationSheet key={sheet.id || "new"} draft={sheet}
+          onClose={() => setSheet(null)}
+          onSave={(v) => { onSave({ ...v, id: sheet.id, used: sheet.id ? sheet.used : false }); setSheet(null); }} />
+      )}
     </div>
   );
 }
