@@ -12,7 +12,7 @@ import { prepareCenterEvent, deleteCenterEvent, isHiddenCenterEvent } from "./ce
 import { externalReservation } from "./googleCalendarDomain.mjs";
 import { mergeReservation, reservationStatus, reservationScheduleChanged, sessionNumber, validateReservation } from "./counselingDomain.mjs";
 import { documentScheduleOf, documentScheduleError, patchDocumentSchedule, toggleDocument, formatDocumentTime } from "./documentSchedule.mjs";
-import { VACATION_TYPES, normalizeVacation, vacationError, vacationSummary, vacationYear, vacationYears, sortVacations, formatDays, toggleVacationUsed } from "./vacationDomain.mjs";
+import { VACATION_TYPES, MINUTES_PER_DAY, DAY_STEPS, REST_STEPS, normalizeVacation, minutesOf, snapMinutes, vacationError, vacationSummary, vacationTotal, vacationYear, vacationYears, sortVacations, formatDuration, formatHours, splitDuration, joinDuration, toggleVacationUsed } from "./vacationDomain.mjs";
 import {
   Plus, Check, ChevronRight, ChevronLeft, Trash2, Inbox, Send,
   Clock, X, Settings2, FolderClosed, CalendarDays, AlertTriangle,
@@ -886,6 +886,132 @@ function TimePick({ value, onChange, style, disabled, label = "시간 선택" })
               </button>
             );
           })}
+        </div>, document.body
+      )}
+    </span>
+  );
+}
+
+/* 휴가 시간 고르개 — 일과 시·분을 각각 굴려서 고릅니다. 30분 단위입니다. */
+function DurPick({ value, onChange, disabled, label = "시간 고르기" }) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState(null);
+  const boxRef = useRef(null);
+  const triggerRef = useRef(null);
+  const panelRef = useRef(null);
+  const dayRef = useRef(null);
+  const restRef = useRef(null);
+  const { days, rest } = splitDuration(value);
+
+  useLayoutEffect(() => {
+    if (!open) { setPosition(null); return; }
+    const place = () => {
+      const anchor = triggerRef.current?.getBoundingClientRect();
+      if (!anchor) return;
+      const vp = window.visualViewport;
+      const top = (vp?.offsetTop || 0) + 8;
+      const left = (vp?.offsetLeft || 0) + 8;
+      const right = left + (vp?.width || window.innerWidth) - 16;
+      const bottom = top + (vp?.height || window.innerHeight) - 16;
+      if (anchor.bottom <= top || anchor.top >= bottom) { setOpen(false); return; }
+      const width = Math.min(232, right - left);
+      const above = Math.max(0, anchor.top - top - 4);
+      const below = Math.max(0, bottom - anchor.bottom - 4);
+      const up = below < 250 && above > below;
+      const maxHeight = Math.min(250, up ? above : below);
+      setPosition({ left: Math.max(left, Math.min(anchor.left, right - width)),
+        top: up ? anchor.top - maxHeight - 4 : anchor.bottom + 4, width, maxHeight });
+    };
+    const onScroll = (e) => { if (!panelRef.current?.contains(e.target)) place(); };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", onScroll, true);
+    window.visualViewport?.addEventListener("resize", place);
+    window.visualViewport?.addEventListener("scroll", place);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", onScroll, true);
+      window.visualViewport?.removeEventListener("resize", place);
+      window.visualViewport?.removeEventListener("scroll", place);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const away = (e) => {
+      if (!boxRef.current?.contains(e.target) && !panelRef.current?.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", away);
+    return () => document.removeEventListener("pointerdown", away);
+  }, [open]);
+
+  /* 열 때 고른 값이 가운데 오도록 굴려 둡니다 */
+  useEffect(() => {
+    if (!open || !position) return;
+    [[dayRef, DAY_STEPS.indexOf(days)], [restRef, REST_STEPS.indexOf(rest)]].forEach(([ref, at]) => {
+      const list = ref.current, item = list?.children[Math.max(0, at)];
+      if (item) list.scrollTop = Math.max(0, item.offsetTop - (list.clientHeight - item.offsetHeight) / 2);
+    });
+  }, [open, !!position]);
+
+  const close = () => { setOpen(false); triggerRef.current?.focus({ preventScroll: true }); };
+
+  const column = (ref, steps, current, pick, render, head) => (
+    <div className="flex-1 min-w-0">
+      <div style={{ fontSize: 10, fontWeight: 750, color: C.faint, textAlign: "center", padding: "2px 0 4px" }}>{head}</div>
+      <div ref={ref} role="listbox" aria-label={head}
+        style={{ overflowY: "auto", overscrollBehavior: "contain", maxHeight: (position?.maxHeight || 250) - 78,
+          scrollSnapType: "y proximity" }}>
+        {steps.map((s) => {
+          const on = s === current;
+          return (
+            <button key={s} type="button" role="option" aria-selected={on}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); pick(s); }}
+              className="wb-btn w-full rounded"
+              style={{ display: "block", height: 32, lineHeight: "32px", padding: 0, border: "none",
+                scrollSnapAlign: "center", cursor: "pointer", fontSize: 13,
+                fontWeight: on ? 800 : 600, background: on ? C.navySoft : "transparent",
+                color: on ? C.navy : C.ink, fontVariantNumeric: "tabular-nums" }}>
+              {render(s)}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  return (
+    <span ref={boxRef} style={{ position: "relative", display: "block" }}>
+      <button ref={triggerRef} type="button" disabled={disabled} aria-label={label}
+        aria-haspopup="listbox" aria-expanded={open}
+        onClick={() => !disabled && setOpen(!open)}
+        className="wb-btn w-full text-left rounded-lg"
+        style={{ padding: "11px 12px", minHeight: 44, fontSize: 14, fontWeight: 700,
+          border: "1px solid " + (open ? C.navy : C.rule),
+          background: disabled ? "#F1F3F0" : C.surface, color: value > 0 ? C.ink : C.faint,
+          cursor: disabled ? "default" : "pointer", fontVariantNumeric: "tabular-nums" }}>
+        {value > 0 ? formatDuration(value) : "시간 고르기"}
+      </button>
+      {open && position && createPortal(
+        <div ref={panelRef} className="rounded-xl wb-fade" onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); } }}
+          style={{ position: "fixed", ...position, background: C.surface, border: "1px solid " + C.rule,
+            boxShadow: "0 8px 24px rgba(26,33,30,0.16)", zIndex: 120, padding: 6, fontFamily: FONT,
+            display: "flex", flexDirection: "column" }}>
+          <div className="flex" style={{ gap: 4, minHeight: 0 }}>
+            {column(dayRef, DAY_STEPS, days, (d) => onChange(joinDuration(d, rest)), (d) => d + "일", "일")}
+            <div style={{ width: 1, background: C.rule }} />
+            {column(restRef, REST_STEPS, rest, (r) => onChange(joinDuration(days, r)),
+              (r) => (r === 0 ? "0분" : formatDuration(r)), "시간 · 분")}
+          </div>
+          <div className="flex items-center justify-between" style={{ borderTop: "1px solid " + C.rule, marginTop: 6, paddingTop: 6, gap: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 750, color: value > 0 ? C.navy : C.faint, fontVariantNumeric: "tabular-nums" }}>
+              {value > 0 ? formatDuration(value) : "0분"}
+            </span>
+            <button type="button" onClick={close} className="wb-btn rounded-lg"
+              style={{ padding: "6px 14px", fontSize: 12, fontWeight: 750, cursor: "pointer",
+                background: C.navy, color: "#fff", border: "1px solid " + C.navy }}>완료</button>
+          </div>
         </div>, document.body
       )}
     </span>
@@ -2718,19 +2844,40 @@ const VacSeg = ({ options, value, onPick }) => (
   </div>
 );
 
+const VacTotal = ({ sum, year }) => (
+  <Card style={{ padding: "15px 16px", background: C.navy, border: "1px solid " + C.navy }}>
+    <div className="flex items-center justify-between gap-2">
+      <Label style={{ color: "rgba(255,255,255,0.62)" }}>{year}년 총 잔여</Label>
+      <span style={{ fontSize: 11.5, fontWeight: 700, color: "rgba(255,255,255,0.62)",
+        fontVariantNumeric: "tabular-nums" }}>{formatHours(sum.left)}</span>
+    </div>
+    <div style={{ marginTop: 3, fontSize: 30, fontWeight: 800, lineHeight: 1.15, color: "#fff",
+      fontVariantNumeric: "tabular-nums" }}>
+      {formatDuration(sum.left)}
+    </div>
+    <div style={{ marginTop: 7, fontSize: 11.5, color: "rgba(255,255,255,0.68)", lineHeight: 1.6,
+      fontVariantNumeric: "tabular-nums" }}>
+      월차와 대체휴가를 합친 값입니다 · 하루는 8시간
+    </div>
+  </Card>
+);
+
 const VacBalance = ({ type, sum, tone }) => (
   <Card style={{ padding: "13px 14px", minWidth: 0 }}>
     <div className="flex items-center justify-between gap-2">
       <span style={{ fontSize: 12.5, fontWeight: 750, color: C.ink }}>{type}</span>
       <Label>잔여</Label>
     </div>
-    <div style={{ marginTop: 4, fontSize: 25, fontWeight: 800, lineHeight: 1.15,
+    <div style={{ marginTop: 4, fontSize: 19, fontWeight: 800, lineHeight: 1.25,
       color: sum.left < 0 ? C.seal : tone, fontVariantNumeric: "tabular-nums" }}>
-      {formatDays(sum.left)}<span style={{ fontSize: 13.5, fontWeight: 700, marginLeft: 2 }}>일</span>
+      {formatDuration(sum.left)}
     </div>
-    <div style={{ marginTop: 6, fontSize: 11, color: C.faint, lineHeight: 1.6, fontVariantNumeric: "tabular-nums" }}>
-      적립 {formatDays(sum.granted)} · 사용 {formatDays(sum.used)}
-      {sum.planned > 0 && <> · <span style={{ color: C.amber, fontWeight: 700 }}>예정 {formatDays(sum.planned)}</span></>}
+    <div style={{ marginTop: 6, fontSize: 11, color: C.faint, lineHeight: 1.65, fontVariantNumeric: "tabular-nums" }}>
+      <span className="block">적립 {formatDuration(sum.granted)}</span>
+      <span className="block">사용 {formatDuration(sum.used)}</span>
+      {sum.planned > 0 && (
+        <span className="block" style={{ color: C.amber, fontWeight: 700 }}>예정 {formatDuration(sum.planned)}</span>
+      )}
     </div>
     {sum.left < 0 && <div style={{ marginTop: 5, fontSize: 10.5, color: C.seal, fontWeight: 700 }}>적립보다 많이 썼습니다</div>}
   </Card>
@@ -2741,7 +2888,7 @@ function VacationSheet({ draft, onSave, onClose }) {
   const [v, setV] = useState(() => ({
     type: draft.type || "월차", mode: draft.mode || "사용",
     date: draft.date || todayISO(), note: draft.note || "",
-    days: draft.days === undefined || draft.days === null ? 1 : draft.days,
+    minutes: draft.id ? minutesOf(draft) : MINUTES_PER_DAY,
   }));
   const [err, setErr] = useState("");
   const patch = (p) => { setV((x) => ({ ...x, ...p })); setErr(""); };
@@ -2749,7 +2896,7 @@ function VacationSheet({ draft, onSave, onClose }) {
     e.preventDefault();
     const message = vacationError(v);
     if (message) { setErr(message); return; }
-    onSave({ ...v, days: Number(v.days) });
+    onSave({ ...v, minutes: snapMinutes(v.minutes), days: undefined });
   };
   const box = { width: "100%", minWidth: 0, padding: "11px 12px", border: "1px solid " + C.rule,
     borderRadius: 10, background: C.surface, color: C.ink, fontSize: 14, fontFamily: FONT, outline: "none" };
@@ -2798,24 +2945,22 @@ function VacationSheet({ draft, onSave, onClose }) {
         </div>
 
         <div style={{ marginTop: 14 }}>
-          <Label>일수</Label>
-          <div className="flex items-center gap-2" style={{ marginTop: 7 }}>
-            <input type="number" inputMode="decimal" step="0.5" min="0" aria-label="일수"
-              value={v.days} onChange={(e) => patch({ days: e.target.value })}
-              style={{ ...box, flex: 1, fontWeight: 700, fontVariantNumeric: "tabular-nums" }} />
-            <div className="flex gap-1.5 shrink-0">
-              {[0.5, 1, 2].map((n) => (
-                <button key={n} type="button" onClick={() => patch({ days: n })} className="wb-btn rounded-lg"
-                  style={{ padding: "10px 11px", fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-                    background: Number(v.days) === n ? C.navySoft : C.surface,
-                    color: Number(v.days) === n ? C.navy : C.muted,
-                    border: "1px solid " + (Number(v.days) === n ? C.navy : C.rule) }}>
-                  {formatDays(n)}
-                </button>
-              ))}
-            </div>
+          <Label>시간</Label>
+          <div style={{ marginTop: 7 }}>
+            <DurPick value={v.minutes} onChange={(minutes) => patch({ minutes })} label="휴가 시간 고르기" />
           </div>
-          <div style={{ marginTop: 6, fontSize: 11.5, color: C.faint }}>반차는 0.5로 적습니다.</div>
+          <div className="flex gap-1.5 flex-wrap" style={{ marginTop: 7 }}>
+            {[30, 60, 120, 240, MINUTES_PER_DAY].map((n) => (
+              <button key={n} type="button" onClick={() => patch({ minutes: n })} className="wb-btn rounded-lg"
+                style={{ padding: "7px 11px", fontSize: 12, fontWeight: 700, cursor: "pointer",
+                  background: v.minutes === n ? C.navySoft : C.surface,
+                  color: v.minutes === n ? C.navy : C.muted,
+                  border: "1px solid " + (v.minutes === n ? C.navy : C.rule) }}>
+                {formatDuration(n)}
+              </button>
+            ))}
+          </div>
+          <div style={{ marginTop: 6, fontSize: 11.5, color: C.faint }}>30분 단위로 고릅니다. 하루는 8시간입니다.</div>
         </div>
 
         <div style={{ marginTop: 14 }}>
@@ -2855,6 +3000,8 @@ function VacationView({ list, onSave, onDelete, onToggleUsed }) {
 
   return (
     <div className="flex flex-col gap-3">
+      <VacTotal sum={vacationTotal(list, active)} year={active} />
+
       <div className="grid grid-cols-2" style={{ gap: 10 }}>
         {VACATION_TYPES.map((t) => (
           <VacBalance key={t} type={t} tone={toneOf(t)} sum={vacationSummary(list, t, active)} />
@@ -2914,15 +3061,14 @@ function VacationView({ list, onSave, onDelete, onToggleUsed }) {
                     </span>
                     <span className="truncate" style={{ fontSize: 12.5, color: C.muted }}>{r.note}</span>
                   </span>
-                  <span className="block" style={{ fontSize: 10.5, color: C.faint, marginTop: 2 }}>
-                    {r.type}
+                  <span className="flex items-baseline gap-1.5" style={{ marginTop: 2 }}>
+                    <span style={{ fontSize: 10.5, color: C.faint }}>{r.type}</span>
+                    <span style={{ fontSize: 12, fontWeight: 800, fontVariantNumeric: "tabular-nums",
+                      color: plus ? C.green : r.used ? C.faint : C.seal }}>
+                      {plus ? "+" : "−"}{formatDuration(r.minutes)}
+                    </span>
                   </span>
                 </button>
-
-                <span className="shrink-0" style={{ fontSize: 13.5, fontWeight: 800, minWidth: 40, textAlign: "right",
-                  color: plus ? C.green : r.used ? C.faint : C.seal, fontVariantNumeric: "tabular-nums" }}>
-                  {plus ? "+" : "−"}{formatDays(r.days)}일
-                </span>
 
                 {plus ? (
                   <span className="shrink-0" style={{ width: 54 }} />
