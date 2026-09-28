@@ -25,6 +25,8 @@ self.addEventListener("fetch", (e) => {
   // OAuth·외부 요청과 상담 API 응답은 서비스 워커가 관리하지 않습니다.
   if (url.origin !== self.location.origin || url.pathname.startsWith("/api/")
     || url.pathname.startsWith("/.netlify/functions/")) return;
+  // Recovery must never fall back to index.html and start the workboard.
+  if (url.pathname === new URL("./recovery.html", self.location.href).pathname) return;
 
   if (e.request.mode === "navigate") {
     e.respondWith((async () => {
