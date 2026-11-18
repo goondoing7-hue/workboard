@@ -281,7 +281,7 @@ const VIEW_KEY = "workboard:view";
 const lastView = () => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch (e) { return {}; } };
 const saveView = (v) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch (e) {} };
 
-const APP_VERSION = "2026.09.21";
+const APP_VERSION = "2026.11.18";
 /* ============================================================
    잠금 — 비밀번호로 내용 자체를 잠급니다.
    화면만 가리는 게 아니라 저장되는 내용이 암호문이 됩니다.
@@ -521,7 +521,50 @@ const Card = ({ children, style, innerRef }) => (
 
 /* 바깥을 눌러 닫기 — 단, 누르기 시작한 곳도 바깥이어야 합니다.
    글자를 드래그하다 밖에서 손을 떼는 경우에 닫히지 않게 합니다. */
-function useDismiss(onDismiss) {
+/* 창이 열려 있는 동안 뒤 화면이 따라 움직이지 않게 막습니다.
+   창이 겹쳐 열려도 맞게 풀리도록 열린 수를 셉니다. */
+let pageLocks = 0;
+let pageLockPrev = null;
+
+const LOCK_PROPS = ["overflow", "position", "top", "left", "right", "width", "paddingRight"];
+
+function lockPage() {
+  if (pageLocks++ > 0) return;
+  const b = document.body;
+  const y = window.scrollY || document.documentElement.scrollTop || 0;
+  /* 스크롤막대가 사라지며 화면이 옆으로 흔들리지 않게 그만큼 채웁니다 */
+  const gap = window.innerWidth - document.documentElement.clientWidth;
+  pageLockPrev = { y };
+  LOCK_PROPS.forEach((k) => { pageLockPrev[k] = b.style[k]; });
+  /* 본문을 그 자리에 붙여 둡니다. 단순히 overflow만 숨기면 보던 위치가 맨 위로 튑니다 */
+  b.style.position = "fixed";
+  b.style.top = -y + "px";
+  b.style.left = "0";
+  b.style.right = "0";
+  b.style.width = "100%";
+  b.style.overflow = "hidden";
+  if (gap > 0) b.style.paddingRight = gap + "px";
+}
+
+function unlockPage() {
+  if (pageLocks > 0) pageLocks -= 1;
+  if (pageLocks > 0) return;
+  const prev = pageLockPrev;
+  pageLockPrev = null;
+  if (!prev) return;
+  const b = document.body;
+  LOCK_PROPS.forEach((k) => { b.style[k] = prev[k]; });
+  window.scrollTo(0, prev.y);   /* 보던 자리로 되돌립니다 */
+}
+
+/* active는 창이 실제로 떠 있는지를 말합니다. 늘 자리에 있는 단추가 이 고리를
+   쓰는 곳도 있어서, 창이 닫혀 있을 때까지 뒤 화면을 묶어 두면 안 됩니다. */
+function useDismiss(onDismiss, active = true) {
+  useLayoutEffect(() => {
+    if (!active) return undefined;
+    lockPage();
+    return unlockPage;
+  }, [active]);
   const started = useRef(false);
   return {
     onPointerDown: (e) => { started.current = e.target === e.currentTarget; },
@@ -1281,7 +1324,7 @@ function DocScheduleSheet({ name, schedule, checked, onSave, onClose }) {
       style={{ background: "rgba(26,33,30,0.4)", zIndex: 70 }} {...dismiss}>
       <form ref={formRef} onSubmit={save} role="dialog" aria-modal="true" aria-labelledby="doc-schedule-title"
         className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
-        style={{ maxWidth: 430, background: C.bg, padding: 20, maxHeight: "90dvh", overflowY: "auto" }}>
+        style={{ maxWidth: 430, background: C.bg, padding: 20, maxHeight: "90dvh", overflowY: "auto", overscrollBehavior: "contain" }}>
         <div className="flex items-center justify-between gap-3">
           <div>
             <Label>서류 일정</Label>
@@ -2609,7 +2652,7 @@ function ContactSheet({ init, projects, onSave, onDelete, onClose }) {
     <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade"
       style={{ background: "rgba(26,33,30,0.4)", zIndex: 60 }} {...dismiss}>
       <div className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
-        style={{ maxWidth: 440, background: C.bg, border: "1px solid " + C.rule, maxHeight: "88vh", overflowY: "auto" }}>
+        style={{ maxWidth: 440, background: C.bg, border: "1px solid " + C.rule, maxHeight: "88vh", overflowY: "auto", overscrollBehavior: "contain" }}>
         <div className="flex items-center justify-between" style={{ padding: "14px 16px 8px" }}>
           <Label>{init && init.id ? "연락처 고치기" : "연락처 추가"}</Label>
           <button onClick={onClose} className="wb-btn" style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>
@@ -2906,7 +2949,7 @@ function LogSheet({ resv, client, session, onSave, onClose }) {
     <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade"
       style={{ background: "rgba(26,33,30,0.4)", zIndex: 60 }} {...dismiss}>
       <div className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
-        style={{ maxWidth: 560, background: C.bg, border: "1px solid " + C.rule, maxHeight: "90vh", overflowY: "auto" }}>
+        style={{ maxWidth: 560, background: C.bg, border: "1px solid " + C.rule, maxHeight: "90vh", overflowY: "auto", overscrollBehavior: "contain" }}>
         <div className="flex items-center justify-between" style={{ padding: "14px 16px 8px" }}>
           <div>
             <Label>상담일지</Label>
@@ -3083,7 +3126,7 @@ function PlanSheet({ init, projects, clients = [], reservations = [], onSave, on
     <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade"
       style={{ background: "rgba(26,33,30,0.4)", zIndex: 60 }} {...dismiss}>
       <div role="dialog" aria-modal="true" aria-label={init.id ? "일정 고치기" : "새 일정"} className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
-        style={{ maxWidth: 460, background: C.bg, border: "1px solid " + C.rule, maxHeight: "88vh", overflowY: "auto" }}>
+        style={{ maxWidth: 460, background: C.bg, border: "1px solid " + C.rule, maxHeight: "88vh", overflowY: "auto", overscrollBehavior: "contain" }}>
 
         <div className="flex items-center justify-between" style={{ padding: "14px 16px 8px" }}>
           <Label>{init.id ? "일정 고치기" : "새 일정"}</Label>
@@ -3939,7 +3982,7 @@ function AssignSheet({ project, base, title, onPick, onClose }) {
     <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade"
       style={{ background: "rgba(26,33,30,0.4)", zIndex: 60 }} {...dismiss}>
       <div className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
-        style={{ maxWidth: 420, background: C.bg, border: "1px solid " + C.rule, maxHeight: "80vh", overflowY: "auto" }}>
+        style={{ maxWidth: 420, background: C.bg, border: "1px solid " + C.rule, maxHeight: "80vh", overflowY: "auto", overscrollBehavior: "contain" }}>
         <div className="flex items-start justify-between" style={{ padding: "15px 16px 10px" }}>
           <div className="min-w-0">
             <Label>{project.name}</Label>
@@ -4971,7 +5014,7 @@ function NoteEditor({ note, onPatch, onClose, onDelete, onDuplicate, projects })
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto" style={{ padding: "0 15px" }}>
+        <div className="flex-1 overflow-y-auto" style={{ padding: "0 15px", overscrollBehavior: "contain" }}>
           {mode === "text" ? (
             <div ref={ref} contentEditable suppressContentEditableWarning onBlur={save} onClick={clickBody}
               onPaste={(e) => {
@@ -5293,7 +5336,7 @@ function Settings({ data, onClose, flash, sync, syncState, syncMsg, lastBackup, 
   return (
     <div className="fixed inset-0 flex items-end sm:items-center justify-center wb-fade" style={{ background: "rgba(26,33,30,0.4)", zIndex: 60 }} {...dismiss}>
       <div className="w-full rounded-t-3xl sm:rounded-3xl wb-sheet"
-        style={{ maxWidth: 560, background: C.bg, border: "1px solid " + C.rule, maxHeight: "88vh", overflowY: "auto" }}>
+        style={{ maxWidth: 560, background: C.bg, border: "1px solid " + C.rule, maxHeight: "88vh", overflowY: "auto", overscrollBehavior: "contain" }}>
 
         <div className="sticky top-0" style={{ background: C.bg, zIndex: 3, borderBottom: "1px solid " + C.rule }}>
           <div className="flex items-center justify-between" style={{ padding: "16px 18px 12px" }}>

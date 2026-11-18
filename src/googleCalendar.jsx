@@ -82,7 +82,7 @@ export function GoogleCalendarButton({ ui, connection, centerConnection }) {
   const titleId = React.useId();
   const statusId = React.useId();
   const dialogId = React.useId();
-  const dismiss = useDismiss(() => setOpen(false));
+  const dismiss = useDismiss(() => setOpen(false), open);
   const { config, state, error, writer } = connection;
   const enabled = !!(config.enabled && config.calendarId);
   const busy = state === "loading" || writer?.working || writer?.auth.connecting || writer?.auth.checking || centerConnection?.state === "syncing";
