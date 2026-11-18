@@ -14,8 +14,17 @@
     },
     "api/google-calendar.js": {
       "includeFiles": "server/googleCalendar.cjs"
+    },
+    "api/keepalive.js": {
+      "includeFiles": "server/keepalive.cjs"
     }
   },
+  "crons": [
+    {
+      "path": "/api/keepalive",
+      "schedule": "0 18 * * *"
+    }
+  ],
   "headers": [
     {
       "source": "/(.*)",
