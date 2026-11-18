@@ -19,7 +19,7 @@ import {
   CornerDownLeft, GripVertical, ArrowUpDown, RotateCcw, LayoutGrid,
   Stamp, Sunrise, CircleDot, Palette, Cloud, CloudOff, RefreshCw, Copy, ShieldCheck, HardDriveDownload,
   LogIn, HardDrive, Database, StickyNote, Pin, FileX, CornerDownRight, Bell, Globe, Youtube, MapPin, AlignLeft, Lock, Unlock, Users, Paperclip, Phone,
-  Star, Bold, Italic, Underline, Baseline, ImagePlus, MoreVertical, CheckSquare
+  Star, Bold, Italic, Underline, Strikethrough, Baseline, ImagePlus, MoreVertical, CheckSquare
 } from "lucide-react";
 
 /* ------------------------------------------------------------------
@@ -4690,6 +4690,9 @@ const noteBg = (k) => (NOTE_COLORS.find((c) => c.k === (k || "")) || NOTE_COLORS
 const TEXT_COLORS = [C.ink, C.seal, C.navy, C.green, C.amber, "#6B4A7A"];
 
 /* 붙여넣기 등으로 들어온 위험한 태그를 걸러 냅니다 */
+/* 한글(HWP) 글자 모양 단축키가 누르는 자리 */
+const HWP_KEYS = { KeyB: "bold", KeyI: "italic", KeyU: "underline", KeyS: "strikeThrough" };
+
 function cleanHtml(html) {
   const d = document.createElement("div");
   d.innerHTML = html || "";
@@ -4956,6 +4959,21 @@ function NoteEditor({ note, onPatch, onClose, onDelete, onDuplicate, projects })
   const save = () => { if (ref.current) onPatch({ html: cleanHtml(ref.current.innerHTML) }); };
   const cmd = (c, v) => { document.execCommand(c, false, v); ref.current && ref.current.focus(); save(); };
 
+  /* 글자 모양 단축키 — 한글(HWP)과 같게 뒀습니다.
+     한글은 Ctrl+B / Ctrl+I / Ctrl+U 와 Alt+Shift+B / I / U 를 함께 받습니다.
+     취소선은 한글에 기본 단축키가 없어, 같은 묶음인 Alt+Shift+S 로 뒀습니다.
+     글쇠는 e.code 로 봅니다 — 한글 입력 상태에서도 자리로 알아듣게 하려는 것입니다. */
+  const hotkey = (e) => {
+    const ctrl = (e.ctrlKey || e.metaKey) && !e.altKey;
+    const altShift = e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey;
+    if (!ctrl && !altShift) return;
+    const c = HWP_KEYS[e.code];
+    if (!c) return;
+    if (c === "strikeThrough" && !altShift) return;   /* Ctrl+S 는 브라우저에 넘깁니다 */
+    e.preventDefault();
+    cmd(c);
+  };
+
   const addImage = async (file) => {
     if (!file) return;
     setBusy("사진을 넣는 중…");
@@ -5016,7 +5034,7 @@ function NoteEditor({ note, onPatch, onClose, onDelete, onDuplicate, projects })
 
         <div className="flex-1 overflow-y-auto" style={{ padding: "0 15px", overscrollBehavior: "contain" }}>
           {mode === "text" ? (
-            <div ref={ref} contentEditable suppressContentEditableWarning onBlur={save} onClick={clickBody}
+            <div ref={ref} contentEditable suppressContentEditableWarning onBlur={save} onClick={clickBody} onKeyDown={hotkey}
               onPaste={(e) => {
                 const f = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith("image/"));
                 if (f) { e.preventDefault(); addImage(f.getAsFile()); }
@@ -5088,6 +5106,7 @@ function NoteEditor({ note, onPatch, onClose, onDelete, onDuplicate, projects })
                 {toolBtn(Bold, "굵게", () => cmd("bold"))}
                 {toolBtn(Italic, "기울임", () => cmd("italic"))}
                 {toolBtn(Underline, "밑줄", () => cmd("underline"))}
+                {toolBtn(Strikethrough, "취소선 (Alt+Shift+S)", () => cmd("strikeThrough"))}
                 {toolBtn(Baseline, "글자 색", () => setPalette(palette === "text" ? "" : "text"), palette === "text")}
                 <span style={{ width: 1, height: 20, background: C.rule, margin: "0 5px" }} />
               </>
